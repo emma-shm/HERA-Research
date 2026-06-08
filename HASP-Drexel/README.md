@@ -1,0 +1,9 @@
+**DataloggerProcessing.ipynb**  :  plots coincidence events across multiple scintillators, pressure, and temperature as a function of time using the datalogger file created by a HERA launch
+
+**muon-energy-classification-grounddata.ipynb** : plots histograms of distribution of SiPM signal, in mV, for each scintillator ONLY at the time stamps where there was three-scintillator coincidence, indicating a pure muon sample.
+
+**HASP-data-processing.py** : Main orchestration script. Loads the raw teensy CSVs for one run, merges them into a single per-event DataFrame, and hands that off to + Scintillator_Processing for analysis. No analysis logic in this script — just I/O, pre-processing, and dispatch.
++ Raw data per run: two event-driven SiPM-teensy CSVs (sipm_teensy_1, sipm_teensy_2), one row per detection event. Each file has 16 trigger_NN_binary columns (1 = scint NN fired) and 16 trigger_NN_signal_time columns (timer value when it fired). Both teensies log all 16 trigger columns — that redundancy is what lets us sync them. Teensy 1 carries real ADC values for layers 1 and 3; teensy 2 for layers 2 and 4.
++ Pre-processing: load both teensy CSVs, then merge into one unified per-event DataFrame by matching events between teensies on trigger pattern + signal time within a tolerance. Handle orphan events on either side (e.g. from a teensy reboot) rather than assuming 1:1 row correspondence.
++ Drift diagnostic: for each matched event and each fired trigger, compute the signal-time difference between teensies. Plot the distribution and the trend over time to check whether the offset is constant or drifting.
++ Handoff: pass the unified DataFrame plus a config dict (trigger → physical-scint mapping, coincidence groups) to Scintillator_Processing. Coincidence is then a row-wise AND over the relevant trigger binaries — no external coincidence counter needed.
