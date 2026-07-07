@@ -4,10 +4,105 @@ Repository for CW calibrations and data analysis scripts for the HERA collaborat
 
 ### `Calibration/`
 Scripts for calibrating HERA's CW detectors + using calibration for particle identification
-- Parsing raw CosmicWatch serial/datalogger output.
-- Fitting the ADC energy-deposition spectrum (Moyal/Landau) and extracting the MPV for gain calibration.
-- Deadtime correction and livetime normalization.
-- Temperature-dependent calibration.
+
+#### `calibration_methods.py`
+
+The core processing and calibration module for the CosmicWatch (CW) detectors.
+It ingests the raw datalogger CSV and the per-scintillator TXT files, aligns
+them on a common timeline, calibrates the SiPM amplitude response, and produces
+the rate spectra and density heatmaps used in the analysis. The pipeline is
+built around three classes plus a set of top-level helpers.
+
+**Classes**
+
+- **`Datalogger_Processing`** — reads the datalogger CSV and plots the raw
+  coincidence-event counts, pressure, and temperature vs. time. Detects timer
+  resets (backward jumps in the timer column) and stitches the individual runs
+  into a single continuous `Absolute Timer (S)` column so multi-run files
+  reprocess cleanly.
+
+- **`CW_Processing`** — reads each scintillator file, applies a deadtime
+  correction to compute per-event livetime, and aligns every scintillator to
+  the datalogger independently via nearest-timestamp `merge_asof`. Handles
+  arbitrary N-fold coincidence naming (CW12, CW123, …), tags coincidence events
+  per scintillator, tracks per-scint and total deadtime-corrected livetime, and
+  plots the SiPM voltage distributions (per-scint and combined).
+
+- **`CW_Analysis`** — assembles a master dataframe anchored on the datalogger
+  timeline. Normalizes each scintillator's SiPM amplitude to MIP units using
+  per-scintillator MPVs (either from Moyal fits or supplied as fixed values),
+  applies an amplitude calibration that shifts each channel to a global-mean
+  MPV, and derives cross-scintillator mean/std columns. Produces the calibrated
+  rate spectra and the 2D density heatmaps, with all rates livetime-normalized
+  so runs of different duration are directly comparable.
+
+**Top-level functions**
+
+- **`processing_pipeline(datalogger, scintillators, Moyal_fit_ranges=None, MPVs=None, ...)`**
+  — one-call entry point that chains `Datalogger_Processing` → `CW_Processing`
+  → `CW_Analysis`. Pass either Moyal fit ranges (to fit each spectrum) or fixed
+  MPVs (to skip fitting); returns the datalogger processor, scintillator
+  processor, and analysis instances.
+- **`split_flight_and_background(...)`** — splits a run into flight vs.
+  background using altitude, cutting where the payload returns to ground after
+  apogee.
+- **`split_by_time_marks(...)`** — splits a datalogger + scintillator set into
+  sections between a list of Absolute Timer marks (e.g. ascent / float /
+  descent).
+- **`plot_density_heatmap_ampcal(...)`** — 2D density heatmap of the
+  amplitude-calibrated cross-scintillator MIP (mean vs. spread across
+  scintillators).
+- **Saving helpers** (`set_results_dir`, `finish_mpl`, `finish_plotly`,
+  `save_table`, `save_summary`) — by default every plot is shown inline; calling
+  `set_results_dir("may31flight")` switches the module into save mode, writing
+  PNGs and CSVs (including the per-scintillator fit-constant summary) into a
+  `<name>_results/` folder.
+
+**Key techniques:** deadtime-corrected livetime, nearest-timestamp
+datalogger/scintillator alignment, Moyal fits for MPV extraction, MIP
+normalization, amplitude calibration to a global-mean MPV, and
+livetime-normalized rate heatmaps.
+
+**Usage:**
+
+One call runs the whole thing — it chains the three classes together and
+produces all the calibration plots.
+
+**Inputs:** a datalogger CSV and a list of per-scintillator TXT files
+(ordered `scint1 … scintN`).
+
+```python
+from calibration_methods import processing_pipeline, set_results_dir
+
+datalogger    = "data/may31_datalogger.csv"
+scintillators = ["data/scint1.txt", "data/scint2.txt", "data/scint3.txt"]
+
+# Optional: save PNGs + CSVs to ./may31flight_results/ instead of showing inline
+set_results_dir("may31flight")
+
+# Mode A — fit a Moyal to each scint to get its MPV
+# (pass per-scint (low, high) mV windows around each MIP peak)
+dl, scints, analysis = processing_pipeline(
+    datalogger, scintillators,
+    Moyal_fit_ranges=[(40, 120), (45, 130), (40, 115)],
+    Show_plots=True,
+)
+
+# Mode B — supply MPVs from a prior calibration (skips fitting)
+dl, scints, analysis = processing_pipeline(
+    datalogger, scintillators,
+    MPVs=[78.3, 81.0, 76.5],
+    Show_plots=True,
+)
+```
+
+Pass **either** `Moyal_fit_ranges` **or** `MPVs`.
+
+**Outputs:** the returned `analysis` holds `analysis.master_df` (the calibrated
+event dataframe) and `analysis.mpv_per_scint` (the MPVs used). With
+`set_results_dir(...)` set, plots and a `calibration_summary.csv` are written to
+`./<name>_results/`.
+
 
 ### `HASP-Drexel/`
 Scripts for applying that code/analysis to HASP flight data
