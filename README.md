@@ -71,30 +71,47 @@ produces all the calibration plots.
 **Inputs:** a datalogger CSV and a list of per-scintillator TXT files
 (ordered `scint1 … scintN`).
 
+### Usage
+
+`calibration_methods.py` is the library — the classes and helpers that do the
+work. `CW_calibration_grounddata.py` and `flight-data-analysis.py` are the two
+worked examples that drive it, and are the best starting points for your own
+analysis.
+
+Every run follows the same three-step pattern:
+
 ```python
-from calibration_methods import processing_pipeline, set_results_dir
-
-datalogger    = "data/may31_datalogger.csv"
-scintillators = ["data/scint1.txt", "data/scint2.txt", "data/scint3.txt"]
-
-# Optional: save PNGs + CSVs to ./may31flight_results/ instead of showing inline
-set_results_dir("may31flight")
-
-# Mode A — fit a Moyal to each scint to get its MPV
-# (pass per-scint (low, high) mV windows around each MIP peak)
-dl, scints, analysis = processing_pipeline(
-    datalogger, scintillators,
-    Moyal_fit_ranges=[(40, 120), (45, 130), (40, 115)],
-    Show_plots=True,
+from calibration_methods import (
+    Datalogger_Processing, CW_Processing, CW_Analysis, set_results_dir
 )
 
-# Mode B — supply MPVs from a prior calibration (skips fitting)
-dl, scints, analysis = processing_pipeline(
-    datalogger, scintillators,
-    MPVs=[78.3, 81.0, 76.5],
-    Show_plots=True,
-)
+set_results_dir("roomtemp")   # optional: save plots + CSVs to ./roomtemp_results/
+
+# 1) datalogger → continuous Absolute Timer (handles timer resets)
+df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
+
+# 2) align each scintillator to the datalogger (deadtime-corrected livetime)
+proc = CW_Processing([scint1_fp, scint2_fp, scint3_fp], df)
+
+# 3) calibrate + plot — pick ONE mode:
+analysis = CW_Analysis(proc, df)
+analysis.rate_spectra_with_moyal(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
+# analysis.rate_spectra_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])                # or supply MPVs
 ```
+
+Results live on the returned `analysis`: `analysis.master_df` (calibrated event
+dataframe) and `analysis.mpv_per_scint` (MPVs used).
+
+**The two example scripts show this pattern in context:**
+
+- **`CW_calibration_grounddata.py`** — runs the bench datasets (room-temp,
+  Cs-137, and temperature-varying fridge/freezer runs), extracts the reference
+  MPVs via Moyal fits, and builds the gain-vs-temperature calibration. Start
+  here to see the fitting workflow and how MPVs are established.
+- **`flight-data-analysis.py`** — takes the MPVs from the ground calibration,
+  trims the balloon run to the flight window, and analyzes it in time segments
+  with the fixed-MPV mode. Start here to see the flight workflow and the
+  segment-splitting helpers.
 
 Pass **either** `Moyal_fit_ranges` **or** `MPVs`.
 
