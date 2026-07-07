@@ -103,6 +103,57 @@ event dataframe) and `analysis.mpv_per_scint` (the MPVs used). With
 `set_results_dir(...)` set, plots and a `calibration_summary.csv` are written to
 `./<name>_results/`.
 
+#### `CW_calibration_grounddata.py`
+
+Bench/ground calibration driver. Runs the lab datasets through the pipeline to
+establish the reference MPVs and the temperature dependence of the detector
+gain. In order, it:
+
+- **Room-temperature run** — a 14-hour run fit with Moyal (`rate_spectra_with_moyal`)
+  to extract the baseline per-scintillator MPVs.
+- **Cs-137 source + Cs-137 background runs** — processed with those fixed MPVs
+  (`rate_spectra_with_fixed_MPVs`) and an amplitude-calibrated density heatmap
+  (`plot_density_heatmap_ampcal`).
+- **Temperature-varying runs** (fridge, freezer, room temp) — each long run is
+  cut into temperature sections with `split_by_time_marks`, and each kept
+  section is Moyal-fit with its own tuned fit ranges (a `skip` set leaves out
+  sections that aren't used).
+
+It then builds the **gain-vs-temperature calibration**. `timebinned_mpv_points`
+splits each run's `master_df` into ~2-hour bins and re-fits every scintillator's
+coincident MIP peak per bin (`_fit_peak_mpv` / `_moyal`), averaging to a per-bin
+MPV. Those points across all three runs are pooled and a linear fit gives
+`global_mean_MPV(T) = slope·T + intercept`, exposed as `global_mean_mpv_at(T)`
+and a `calibrate(scint_mVs, scint_mpv, T)` helper, plus an MPV-vs-temperature
+plot.
+
+**Output used downstream:** the per-scint MPVs and the `MPV(T)` fit, which feed
+the flight analysis.
+
+#### `flight-data-analysis.py`
+
+Flight data driver (May 31st flight). Applies the ground-calibration MPVs to the
+balloon flight and analyzes the run in segments. Defines a few flight-specific
+helpers on top of `calibration_methods`:
+
+- **`trim_to_flight(...)`** — drops the pre-launch warmup (`lead_minutes`) and
+  cuts the run where altitude returns to ground after apogee, writing trimmed
+  datalogger + scintillator files.
+- **`split_by_time_marks(...)`** — slices a run into sections between Absolute
+  Timer marks (seconds).
+- **`analyze_flight_in_segments(...)`** — splits the flight into N segments (by
+  time or by event count), then runs the fixed-MPV pipeline plus an
+  amplitude-calibrated heatmap on each, returning a dict of per-segment analysis
+  objects.
+- **`analyze_flight_window(...)`** — convenience wrapper for a single
+  `[t_start, t_end]` window.
+
+The main block loads the flight datalogger and three scintillator files,
+processes the full run, trims it to the flight window, plots altitude vs. time
+as a sanity check (and prints max altitude before/after trimming to confirm the
+trim didn't clip the peak), then splits the flight into 4 time segments and runs
+the fixed-MPV analysis using the MPVs from `CW_calibration_grounddata.py`.
+
 
 ### `HASP-Drexel/`
 Scripts for applying that code/analysis to HASP flight data
@@ -110,15 +161,12 @@ Scripts for applying that code/analysis to HASP flight data
 - Applying the calibration from `Calibration/`.
 - Coincidence-rate and flux computation vs. altitude and time.
 - 2D density heatmaps and summary plots (Plotly / Matplotlib).
-- *(add your specific notebook names here)*
 
 ---
 
 ## Data
 
-The notebooks expect raw output from the CosmicWatch datalogger (SD-card / serial logs). Each event row typically includes an event number, timestamp/millis, the measured ADC value (SiPM peak), a computed deadtime, and — depending on configuration — coincidence and temperature fields.
-
-Large raw data files and generated outputs are kept out of version control via `.gitignore`. If you want to reproduce the analysis, place the flight/calibration data in the location the notebook points to (update the path at the top of the notebook as needed).
+The functions and scripts in the Calibration folder expect raw output from the CosmicWatch datalogger (SD-card / serial logs). Each event row typically includes an event number, timestamp/millis, the measured ADC value (SiPM peak), a computed deadtime, and — depending on configuration — coincidence and temperature fields. These scripts are not yet fully calibrated for the HASP data structure.
 
 ---
 
@@ -139,12 +187,6 @@ A few of the core techniques used across the notebooks:
 If you use this code or reference this work, please cite the associated thesis:
 
 > Martignoni, E. *High-Altitude Engineering and Analysis for Cosmic Ray Tomography.* M.S. Thesis, Department of Mechanical Engineering, Drexel University, 2026.
-
----
-
-## License
-
-*No license file is currently included.* Without a license, default copyright applies and others may not reuse the code. If you'd like to allow reuse, add a `LICENSE` file — [MIT](https://choosealicense.com/licenses/mit/) is a common, permissive choice for research code.
 
 ---
 
