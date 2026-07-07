@@ -75,8 +75,7 @@ produces all the calibration plots.
 
 `calibration_methods.py` is the library — the classes and helpers that do the
 work. `CW_calibration_grounddata.py` and `flight-data-analysis.py` are the two
-worked examples that drive it, and are the best starting points for your own
-analysis.
+worked examples that use it.
 
 Every run follows the same three-step pattern:
 
