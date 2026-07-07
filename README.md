@@ -19,54 +19,6 @@ Scripts for applying that code/analysis to HASP flight data
 
 ---
 
-## Getting started
-
-### Prerequisites
-- Python 3.10+
-- Jupyter (Notebook or Lab)
-
-### Clone the repository
-```bash
-git clone https://github.com/emma-shm/HERA-Research.git
-cd HERA-Research
-```
-
-### Set up an environment
-Using `venv`:
-```bash
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-Or using conda:
-```bash
-conda create -n hera python=3.11
-conda activate hera
-pip install -r requirements.txt
-```
-
-### Suggested `requirements.txt`
-If you don't already have one, this covers the typical stack for this analysis:
-```
-numpy
-scipy
-pandas
-matplotlib
-plotly
-lmfit
-jupyter
-tqdm
-```
-
-### Launch
-```bash
-jupyter lab        # or: jupyter notebook
-```
-Open the notebook you want under `Calibration/` or `HASP-Drexel/` and run the cells top to bottom.
-
----
-
 ## Data
 
 The notebooks expect raw output from the CosmicWatch datalogger (SD-card / serial logs). Each event row typically includes an event number, timestamp/millis, the measured ADC value (SiPM peak), a computed deadtime, and — depending on configuration — coincidence and temperature fields.
