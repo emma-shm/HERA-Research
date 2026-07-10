@@ -240,25 +240,6 @@ def analyze_flight_in_segments(
     return results
 
 
-def analyze_flight_window(datalogger_fp, scint_fps, MPVs, t_start, t_end,
-                          label="window", normalize_by_livetime=True,
-                          noise_threshold=0.1, mip_window=(0.8, 1.2),
-                          show_heatmap=True):
-    """
-    Run the fixed-MPV pipeline + ampcal heatmap on a SINGLE Absolute-Timer
-    window [t_start, t_end] (seconds). Returns that segment's analysis object.
-    """
-    results = analyze_flight_in_segments(
-        datalogger_fp, scint_fps, MPVs,
-        time_marks=[float(t_start), float(t_end) + 1e-6],   # [t0, t1) is half-open; keep the last row
-        labels=[label],
-        normalize_by_livetime=normalize_by_livetime,
-        noise_threshold=noise_threshold,
-        mip_window=mip_window,
-        show_heatmap=show_heatmap,
-    )
-    return results[label]["analysis"]
-
 
 
 

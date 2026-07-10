@@ -329,10 +329,6 @@ print(f"global_mean_MPV(T) = {fit.slope:.4f}·T + {fit.intercept:.4f}   "
 
 global_mean_mpv_at = lambda T: fit.slope * T + fit.intercept
 
-def calibrate(scint_mVs, scint_mpv, T):
-    gmpv = global_mean_mpv_at(T)
-    return (scint_mVs - abs(gmpv - scint_mpv)) / gmpv
-
 # ── Build one (T, MPV) point per SURVIVING section ───────────────────────────
 # Skipped sections were never added to the *_runs dicts, so every entry here is
 # a kept section. Labels are prefixed (fridge_/freezer_/roomtemp_) so merging is safe.
@@ -354,10 +350,6 @@ print(f"global_mean_MPV(T) = {fit.slope:.4f}·T + {fit.intercept:.4f}   "
       f"(R² = {fit.rvalue**2:.3f}, n = {len(runs)})")
 
 global_mean_mpv_at = lambda T: fit.slope * T + fit.intercept
-
-def calibrate(scint_mVs, scint_mpv, T):
-    gmpv = global_mean_mpv_at(T)
-    return (scint_mVs - abs(gmpv - scint_mpv)) / gmpv
 
 # per-row predicted global mean MPV on each section's master_df (downstream use)
 for a in runs:

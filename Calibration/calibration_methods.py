@@ -13,266 +13,6 @@ SAVE_PLOTS  = False        # off by default → methods still just .show()
 RESULTS_DIR = "plots"      # overwritten by set_results_dir()
 
 
-# ================== Helper functions for saving data ==================
-def set_results_dir(name=None):
-    """Call once before processing. Makes ./<name>_results/ and turns on saving."""
-    global RESULTS_DIR, SAVE_PLOTS
-    if name is None:
-        name = input("Name for this dataset (e.g. may31flight): ").strip()
-    RESULTS_DIR = f"{name}_results"
-    SAVE_PLOTS  = True
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    print(f"[plots] saving to ./{RESULTS_DIR}/")
-    return RESULTS_DIR
-
-def finish_mpl(fig, name):
-    """Save a matplotlib fig to RESULTS_DIR if saving is on, else show it."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.png")
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        print(f"[saved] {path}")
-        plt.close(fig)
-    else:
-        plt.show()
-
-def finish_plotly(fig, name):
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.png")
-        fig.write_image(path, scale=2)   # scale=2 ≈ 2x resolution
-        print(f"[saved] {path}")
-    else:
-        fig.show()
-
-def save_table(df, name):
-    """Save a DataFrame to RESULTS_DIR as CSV when saving is on."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.csv")
-        df.to_csv(path, index=False)
-        print(f"[saved] {path}")
-
-def save_summary(d, name):
-    """Save fit constants as a per-scintillator CSV (reloadable) when saving is on."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.csv")
-        n = len(d["mpv_per_scint"])
-        rows = pd.DataFrame({
-            "scint":        list(range(1, n + 1)),
-            "mpv_mV":       [float(d["mpv_per_scint"][i]) for i in range(1, n + 1)],
-            "amp_shift_mV": [float(x) for x in d["amp_shifts"]],
-            "livetime_s":   [float(x) if x is not None else float("nan")
-                             for x in d["livetime_s_per_scint"]],
-        })
-        rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
-        rows["noise_threshold"]    = d["noise_threshold"]
-        rows.to_csv(path, index=False)
-        print(f"[saved] {path}")
-
-
-def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetime=True, cbar_max=None):
-    """
-    2D density heatmap of the amplitude-calibrated cross-scint MIP:
-        x = mean across scints  (SiPM_scints_avg_MIP_ampcal)
-        y = std  across scints  (SiPM_scints_std_MIP_ampcal)
-
-    Mirrors CW_Analysis.plot_density_heatmaps but on the ampcal columns.
-
-    col : str, suffix of the columns to use (e.g. 'MIP_ampcal' or 'MIP_Tcal'), defaults to 'MIP_ampcal';
-    normalize_by_livetime : if True, z = sum(1/livetime) -> rate [s^-1]
-                            (comparable across runs of different duration);
-                            if False, z = raw counts.
-    """
-    master  = analysis.master_df
-    n       = len(analysis.processor.fps)
-    min_mip = analysis.noise_threshold
-    tag     = analysis.coinc_tag
-    coinc_label = '&'.join(str(i) for i in range(1, n + 1))
-
-    avg_col, std_col = "SiPM_scints_avg_" + col, "SiPM_scints_std_" + col
-
-    # keep rows where the (calibrated) mean MIP clears the noise threshold
-    sub = master[master[avg_col] >= min_mip].copy()
-
-    if normalize_by_livetime:
-        livetime = float(np.mean([getattr(analysis.processor, f'total_livetime_scint{i}_s') for i in range(1, n + 1)])) # get the average livetime across the n scintillators, find the average
-        print(f"[ampcal heatmap] normalizing by livetime = {livetime:.2f} s")
-        sub["_rate_weight"] = 1.0 / livetime # weight each event by the inverse of the average livetime to get a rate in s^-1; this way, the heatmap's z-axis will represent a rate that is comparable across runs of different duration
-        z, histfunc, cbar = "_rate_weight", "sum", "Normalized counts [s\u207b\u00b9]" # z is the column to aggregate for the heatmap, histfunc is the aggregation function to apply to that column (sum of weights gives a rate), cbar is the colorbar title
-        norm_note = f"rate-normalized by livetime = {livetime:.1f} s" # note to include in the plot title about the normalization
-    else:
-        z, histfunc, cbar = None, "count", "Counts" # if no rate normalizing, then z is None (so heatmap will just count rows), histfunc is "count" to count rows, and cbar title is just "Counts"
-        norm_note = "raw counts"
-
-    print(f"[ampcal heatmap] rows with {avg_col} >= {min_mip}: {len(sub)} "
-          f"(finite std: {sub[std_col].notna().sum()})")
-
-    fig = px.density_heatmap(
-        sub,
-        x=avg_col, y=std_col,
-        z=z, histfunc=histfunc,
-        nbinsx=50, nbinsy=50, width=800, height=600,
-        color_continuous_scale="Inferno",
-        range_color=(0, cbar_max) if cbar_max is not None else None,
-        labels={
-            avg_col: f"Mean across {n} scints [MIP, ampcal]",
-            std_col: f"Std across {n} scints [MIP, ampcal]",
-        },
-        title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean "
-               f"(amplitude-calibrated MIP)<br>(N={len(sub)} events, {norm_note})"),
-    )
-    fig.update_coloraxes(colorbar_title=cbar)
-    finish_plotly(fig, "ampcal_heatmap")
-
-def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
-    """
-    Split a datalogger + scintillator set into the sections BETWEEN a list of
-    Absolute Timer marks (seconds). N marks → N-1 sections: section k spans
-    [time_marks[k], time_marks[k+1]). To keep the run start/end as their own
-    sections, include 0 and the max Absolute Timer in time_marks.
-
-    Args:
-        datalogger_fp : path to the datalogger CSV
-        scint_fps     : list of scintillator TXT paths
-        time_marks    : list of Absolute Timer cut points in seconds
-        labels        : optional list of section names (len == len(marks)-1);
-                        defaults to seg1, seg2, ...
-
-    Returns:
-        list of dicts, one per section:
-            {'label', 't_start', 't_end', 'datalogger', 'scints': [...]}
-    """
-    marks = sorted(float(t) for t in time_marks)
-    if len(marks) < 2:
-        raise ValueError("Need at least 2 time marks to define a section.")
-    if labels is not None and len(labels) != len(marks) - 1:
-        raise ValueError(f"Got {len(labels)} labels for {len(marks) - 1} sections.")
-
-    # Build Absolute Timer with the existing class.
-    dl = Datalogger_Processing(datalogger_fp, show_plots=False)
-    dl.process()
-    df = dl.df.copy()
-    df['Timer[S]'] = df['Absolute Timer (S)']        # flatten resets so each section reprocesses cleanly
-    df = df.drop(columns=[c for c in ['Absolute Timer (S)', 'Timer_rel'] if c in df.columns])
-
-    out_dir = os.path.dirname(datalogger_fp)
-    base    = os.path.splitext(os.path.basename(datalogger_fp))[0]
-
-    # Pre-read each scintillator once (3-line header + body), reuse across sections.
-    cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]','SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
-    scint_data = []
-    for fp in scint_fps:
-        with open(fp) as f:
-            header = [next(f) for _ in range(3)]
-        sdf = pd.read_csv(fp, sep='\t', comment='#', header=None, skiprows=3, names=cols, engine='python')
-        sbase = os.path.splitext(os.path.basename(fp))[0]
-        scint_data.append((sbase, header, sdf))
-
-    sections = []
-    for k in range(len(marks) - 1):
-        t0, t1 = marks[k], marks[k + 1]
-        tag = labels[k] if labels is not None else f"seg{k + 1}"
-        print(f"Section '{tag}': {t0:.0f}-{t1:.0f} s")
-
-        # Datalogger slice [t0, t1).
-        dl_out  = os.path.join(out_dir, f"{base}_{tag}.csv")
-        dl_mask = (df['Timer[S]'] >= t0) & (df['Timer[S]'] < t1)
-        df[dl_mask].to_csv(dl_out, index=False)
-
-        # Scintillator slices on the same window, keeping the 3-line header + tab format.
-        scint_out = []
-        for sbase, header, sdf in scint_data:
-            out    = os.path.join(out_dir, f"{sbase}_{tag}.txt")
-            s_mask = (sdf['Time[s]'] >= t0) & (sdf['Time[s]'] < t1)
-            with open(out, 'w') as f:
-                f.writelines(header)
-                sdf[s_mask].to_csv(f, sep='\t', header=False, index=False)
-            scint_out.append(out)
-
-        sections.append({'label': tag, 't_start': t0, 't_end': t1,
-                         'datalogger': dl_out, 'scints': scint_out})
-
-    return sections    
-
-def split_flight_and_background(datalogger_fp, scint_fps, ground_band=50.0):
-    # Build Absolute Timer with the existing class.
-    dl = Datalogger_Processing(datalogger_fp, show_plots=False)
-    dl.process()
-    df = dl.df.copy()
-    df['Timer[S]'] = df['Absolute Timer (S)']        # flatten resets so halves reprocess cleanly
-
-    # Cut where altitude returns to ground after apogee.
-    alt = df['Altitude[m]']
-    ground   = alt.iloc[:50].median()
-    peak_idx = alt.idxmax()
-    landed   = alt.loc[peak_idx:][alt.loc[peak_idx:] <= ground + ground_band]
-    t_cut    = df['Absolute Timer (S)'].loc[landed.index[0]]
-    print(f"Cutting at t = {t_cut:.0f} s")
-
-    out_dir = os.path.dirname(datalogger_fp)
-    paths = {'flight': {'scints': []}, 'background': {'scints': []}}
-
-    # Split datalogger (drop helper cols so the class rebuilds them on re-read).
-    df = df.drop(columns=[c for c in ['Absolute Timer (S)', 'Timer_rel'] if c in df.columns])
-    base = os.path.splitext(os.path.basename(datalogger_fp))[0]
-    for tag, mask in [('flight', df['Timer[S]'] <= t_cut), ('background', df['Timer[S]'] > t_cut)]:
-        out = os.path.join(out_dir, f"{base}_{tag}.csv")
-        df[mask].to_csv(out, index=False)
-        paths[tag]['datalogger'] = out
-
-    # Split scintillators at the same t_cut, keeping the 3-line header + tab format.
-    cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]','SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
-    for fp in scint_fps:
-        with open(fp) as f:
-            header = [next(f) for _ in range(3)]
-        sdf = pd.read_csv(fp, sep='\t', comment='#', header=None, skiprows=3, names=cols, engine='python')
-        sbase = os.path.splitext(os.path.basename(fp))[0]
-        for tag, mask in [('flight', sdf['Time[s]'] <= t_cut), ('background', sdf['Time[s]'] > t_cut)]:
-            out = os.path.join(out_dir, f"{sbase}_{tag}.txt")
-            with open(out, 'w') as f:
-                f.writelines(header)
-                sdf[mask].to_csv(f, sep='\t', header=False, index=False)
-            paths[tag]['scints'].append(out)
-
-    return paths
-
-
-
-def processing_pipeline(datalogger, scintillators, Moyal_fit_ranges=None, MPVs=None, Show_plots=False, Debug=False):
-    """
-    Runs the full processing pipeline on the given datalogger and scintillator files:
-    
-    Args:
-        datalogger (str): File path to the datalogger CSV file.
-        scintillators (list of str): List of file paths to the scintillator TXT files.
-        Moyal_fit_ranges (list of tuples, optional): List of (low, high) fit ranges for each scintillator. If provided, spectra will be fitted with Moyal distributions.
-        MPVs (list of floats, optional): List of fixed MPV values for each scintillator. If provided, spectra will be normalized by these fixed MPVs without fitting.
-        Show_plots (bool, optional): Whether to display plots during processing. Default is False.
-        Debug (bool, optional): Whether to print debug information during processing. Default is False.
-
-    Returns:
-        tuple containing the datalogger processor instance, scintillators processor instance, and analysis instance.
-    """
-    dl_processor = Datalogger_Processing(datalogger, show_plots=Show_plots, debug=Debug).process()
-
-    scintillators_processor = CW_Processing(scintillators, dl_processor, show_plots=Show_plots, debug=Debug)
-    analysis = CW_Analysis(scintillators_processor, dl_processor, debug=Debug)
-    
-    if Moyal_fit_ranges is not None:
-        analysis.rate_spectra_with_moyal(moyal_fit_ranges=Moyal_fit_ranges)
-
-    if MPVs is not None:
-        analysis.rate_spectra_with_fixed_MPVs(MPVs=MPVs)
-
-    if MPVs is None and Moyal_fit_ranges is None:
-        raise ValueError("Must provide either Moyal fit ranges or fixed MPVs for the spectra.")
-    
-    return dl_processor, scintillators_processor, analysis
-
-
-
 
 # ================== Main processing code ==================
 class Datalogger_Processing:
@@ -1579,3 +1319,197 @@ class CW_Analysis:
                         f"(N={len(master)} events, all scints ≥ {min_mip} MIP)"),
         )
         finish_plotly(fig, "std_heatmap")
+
+
+
+# ================== Helper functions for saving data ==================
+def set_results_dir(name=None):
+    """Call once before processing. Makes ./<name>_results/ and turns on saving."""
+    global RESULTS_DIR, SAVE_PLOTS
+    if name is None:
+        name = input("Name for this dataset (e.g. may31flight): ").strip()
+    RESULTS_DIR = f"{name}_results"
+    SAVE_PLOTS  = True
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    print(f"[plots] saving to ./{RESULTS_DIR}/")
+    return RESULTS_DIR
+
+def finish_mpl(fig, name):
+    """Save a matplotlib fig to RESULTS_DIR if saving is on, else show it."""
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.png")
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        print(f"[saved] {path}")
+        plt.close(fig)
+    else:
+        plt.show()
+
+def finish_plotly(fig, name):
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.png")
+        fig.write_image(path, scale=2)   # scale=2 ≈ 2x resolution
+        print(f"[saved] {path}")
+    else:
+        fig.show()
+
+def save_table(df, name):
+    """Save a DataFrame to RESULTS_DIR as CSV when saving is on."""
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.csv")
+        df.to_csv(path, index=False)
+        print(f"[saved] {path}")
+
+def save_summary(d, name):
+    """Save fit constants as a per-scintillator CSV (reloadable) when saving is on."""
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.csv")
+        n = len(d["mpv_per_scint"])
+        rows = pd.DataFrame({
+            "scint":        list(range(1, n + 1)),
+            "mpv_mV":       [float(d["mpv_per_scint"][i]) for i in range(1, n + 1)],
+            "amp_shift_mV": [float(x) for x in d["amp_shifts"]],
+            "livetime_s":   [float(x) if x is not None else float("nan")
+                             for x in d["livetime_s_per_scint"]],
+        })
+        rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
+        rows["noise_threshold"]    = d["noise_threshold"]
+        rows.to_csv(path, index=False)
+        print(f"[saved] {path}")
+
+
+
+
+# ================== Helper functions for plotting in other scripts ==================
+def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetime=True, cbar_max=None):
+    """
+    2D density heatmap of the amplitude-calibrated cross-scint MIP:
+        x = mean across scints  (SiPM_scints_avg_MIP_ampcal)
+        y = std  across scints  (SiPM_scints_std_MIP_ampcal)
+
+    Mirrors CW_Analysis.plot_density_heatmaps but on the ampcal columns.
+
+    col : str, suffix of the columns to use (e.g. 'MIP_ampcal' or 'MIP_Tcal'), defaults to 'MIP_ampcal';
+    normalize_by_livetime : if True, z = sum(1/livetime) -> rate [s^-1]
+                            (comparable across runs of different duration);
+                            if False, z = raw counts.
+    """
+    master  = analysis.master_df
+    n       = len(analysis.processor.fps)
+    min_mip = analysis.noise_threshold
+    tag     = analysis.coinc_tag
+    coinc_label = '&'.join(str(i) for i in range(1, n + 1))
+
+    avg_col, std_col = "SiPM_scints_avg_" + col, "SiPM_scints_std_" + col
+
+    # keep rows where the (calibrated) mean MIP clears the noise threshold
+    sub = master[master[avg_col] >= min_mip].copy()
+
+    if normalize_by_livetime:
+        livetime = float(np.mean([getattr(analysis.processor, f'total_livetime_scint{i}_s') for i in range(1, n + 1)])) # get the average livetime across the n scintillators, find the average
+        print(f"[ampcal heatmap] normalizing by livetime = {livetime:.2f} s")
+        sub["_rate_weight"] = 1.0 / livetime # weight each event by the inverse of the average livetime to get a rate in s^-1; this way, the heatmap's z-axis will represent a rate that is comparable across runs of different duration
+        z, histfunc, cbar = "_rate_weight", "sum", "Normalized counts [s\u207b\u00b9]" # z is the column to aggregate for the heatmap, histfunc is the aggregation function to apply to that column (sum of weights gives a rate), cbar is the colorbar title
+        norm_note = f"rate-normalized by livetime = {livetime:.1f} s" # note to include in the plot title about the normalization
+    else:
+        z, histfunc, cbar = None, "count", "Counts" # if no rate normalizing, then z is None (so heatmap will just count rows), histfunc is "count" to count rows, and cbar title is just "Counts"
+        norm_note = "raw counts"
+
+    print(f"[ampcal heatmap] rows with {avg_col} >= {min_mip}: {len(sub)} "
+          f"(finite std: {sub[std_col].notna().sum()})")
+
+    fig = px.density_heatmap(
+        sub,
+        x=avg_col, y=std_col,
+        z=z, histfunc=histfunc,
+        nbinsx=50, nbinsy=50, width=800, height=600,
+        color_continuous_scale="Inferno",
+        range_color=(0, cbar_max) if cbar_max is not None else None,
+        labels={
+            avg_col: f"Mean across {n} scints [MIP, ampcal]",
+            std_col: f"Std across {n} scints [MIP, ampcal]",
+        },
+        title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean "
+               f"(amplitude-calibrated MIP)<br>(N={len(sub)} events, {norm_note})"),
+    )
+    fig.update_coloraxes(colorbar_title=cbar)
+    finish_plotly(fig, "ampcal_heatmap")
+ 
+
+# def split_flight_and_background(datalogger_fp, scint_fps, ground_band=50.0):
+#     # Build Absolute Timer with the existing class.
+#     dl = Datalogger_Processing(datalogger_fp, show_plots=False)
+#     dl.process()
+#     df = dl.df.copy()
+#     df['Timer[S]'] = df['Absolute Timer (S)']        # flatten resets so halves reprocess cleanly
+
+#     # Cut where altitude returns to ground after apogee.
+#     alt = df['Altitude[m]']
+#     ground   = alt.iloc[:50].median()
+#     peak_idx = alt.idxmax()
+#     landed   = alt.loc[peak_idx:][alt.loc[peak_idx:] <= ground + ground_band]
+#     t_cut    = df['Absolute Timer (S)'].loc[landed.index[0]]
+#     print(f"Cutting at t = {t_cut:.0f} s")
+
+#     out_dir = os.path.dirname(datalogger_fp)
+#     paths = {'flight': {'scints': []}, 'background': {'scints': []}}
+
+#     # Split datalogger (drop helper cols so the class rebuilds them on re-read).
+#     df = df.drop(columns=[c for c in ['Absolute Timer (S)', 'Timer_rel'] if c in df.columns])
+#     base = os.path.splitext(os.path.basename(datalogger_fp))[0]
+#     for tag, mask in [('flight', df['Timer[S]'] <= t_cut), ('background', df['Timer[S]'] > t_cut)]:
+#         out = os.path.join(out_dir, f"{base}_{tag}.csv")
+#         df[mask].to_csv(out, index=False)
+#         paths[tag]['datalogger'] = out
+
+#     # Split scintillators at the same t_cut, keeping the 3-line header + tab format.
+#     cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]','SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
+#     for fp in scint_fps:
+#         with open(fp) as f:
+#             header = [next(f) for _ in range(3)]
+#         sdf = pd.read_csv(fp, sep='\t', comment='#', header=None, skiprows=3, names=cols, engine='python')
+#         sbase = os.path.splitext(os.path.basename(fp))[0]
+#         for tag, mask in [('flight', sdf['Time[s]'] <= t_cut), ('background', sdf['Time[s]'] > t_cut)]:
+#             out = os.path.join(out_dir, f"{sbase}_{tag}.txt")
+#             with open(out, 'w') as f:
+#                 f.writelines(header)
+#                 sdf[mask].to_csv(f, sep='\t', header=False, index=False)
+#             paths[tag]['scints'].append(out)
+
+#     return paths
+
+
+
+# def processing_pipeline(datalogger, scintillators, Moyal_fit_ranges=None, MPVs=None, Show_plots=False, Debug=False):
+#     """
+#     Runs the full processing pipeline on the given datalogger and scintillator files:
+    
+#     Args:
+#         datalogger (str): File path to the datalogger CSV file.
+#         scintillators (list of str): List of file paths to the scintillator TXT files.
+#         Moyal_fit_ranges (list of tuples, optional): List of (low, high) fit ranges for each scintillator. If provided, spectra will be fitted with Moyal distributions.
+#         MPVs (list of floats, optional): List of fixed MPV values for each scintillator. If provided, spectra will be normalized by these fixed MPVs without fitting.
+#         Show_plots (bool, optional): Whether to display plots during processing. Default is False.
+#         Debug (bool, optional): Whether to print debug information during processing. Default is False.
+
+#     Returns:
+#         tuple containing the datalogger processor instance, scintillators processor instance, and analysis instance.
+#     """
+#     dl_processor = Datalogger_Processing(datalogger, show_plots=Show_plots, debug=Debug).process()
+
+#     scintillators_processor = CW_Processing(scintillators, dl_processor, show_plots=Show_plots, debug=Debug)
+#     analysis = CW_Analysis(scintillators_processor, dl_processor, debug=Debug)
+    
+#     if Moyal_fit_ranges is not None:
+#         analysis.rate_spectra_with_moyal(moyal_fit_ranges=Moyal_fit_ranges)
+
+#     if MPVs is not None:
+#         analysis.rate_spectra_with_fixed_MPVs(MPVs=MPVs)
+
+#     if MPVs is None and Moyal_fit_ranges is None:
+#         raise ValueError("Must provide either Moyal fit ranges or fixed MPVs for the spectra.")
+    
+#     return dl_processor, scintillators_processor, analysis
