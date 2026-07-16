@@ -1,5 +1,5 @@
-# `Calibration/`
-Scripts for calibrating HERA's CW detectors + using calibration for particle identification
+# `CW-analysis/`
+Scripts for calibrating and analyzing HERA's typical three-scintillator CW detectors, using calibration for particle identification
 
 ## `CW_calibration_grounddata.ipynb`
 All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.py
