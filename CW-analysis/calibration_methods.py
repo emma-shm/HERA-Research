@@ -153,10 +153,10 @@ class Datalogger_Processing:
 
 
 class Scintillators_Processing:
-    def __init__(self, filepaths, datalogger_df_raw, show_plots=False, debug=False):
+    def __init__(self, filepaths, datalogger_df, show_plots=False, debug=False):
         '''
-        Class for processing scintillator files, for any number of scintillators. Instantiate the class once with a list of filepaths for all scintillator TXT files and the raw datalogger dataframe.
-        The class has the following key attributes, all of which are executed immediately when the class is instantiated:
+        Class for processing scintillator files, for any number of scintillators. Instantiate the class once with a list of filepaths for all scintillator TXT files and the datalogger dataframe from the Datalogger_Processing class.
+        The class has the following key methods, all of which are executed immediately when the class is instantiated:
                 - static methods: _coinc_tag(k) and _coinc_src_col(k) for arbitrary-N coincidence naming, so that if you have 3 scintillators, you get CW12, CW123 for coincidence columns instead of hardcoding it.
                 - apply_deadtime_correction(i): computes deadtime-corrected per-event livetime for a given scintillator, returning the results as an array
                 - align_with_datalogger(): create aligned_scint{i} dataframe from each of the N scintillators (i=1,2,..,N); each dataframe contains the original scintillator columns plus the datalogger columns, aligned by nearest-neighbour timestamp matching;
@@ -166,7 +166,7 @@ class Scintillators_Processing:
                 
         Arg:
             filepaths: list of filepath strings for each scintillator TXT
-            datalogger_df_raw: raw datalogger dataframe (with Absolute Timer column already created)
+            datalogger_df: datalogger dataframe from Datalogger_Processing() class (with Absolute Timer column already created)
         '''
         self.fps = filepaths
         
@@ -187,7 +187,7 @@ class Scintillators_Processing:
                              skiprows=3, names=columns, engine='python')
             setattr(self, f'scint_{i}', df)
 
-        self.align_with_datalogger(datalogger_df_raw)
+        self.align_with_datalogger(datalogger_df)
 
         # ── individual histograms ─────────────────────────────────────────────
         for i in range(1, len(self.fps) + 1):
@@ -231,7 +231,7 @@ class Scintillators_Processing:
 
         return pd.Series(event_livetime_s, index=scint_df.index, name=f'livetime_scint{i}[s]')
 
-    def align_with_datalogger(self, datalogger_df_raw, tolerance=0.5):
+    def align_with_datalogger(self, datalogger_df, tolerance=0.5):
         '''
         Independently align each scintillator to the datalogger. Every scintillator dataframe preserves ALL of its original rows.
         Datalogger columns are merged onto each scintillator independently using nearest-neighbour timestamp matching, creating a new aligned_scint{i} dataframe for each scintillator which contains the original scintillator columns plus the datalogger columns.
@@ -239,7 +239,7 @@ class Scintillators_Processing:
         '''
 
         # Create a copy of the datalogger dataframe sorted by Absolute Timer (S) for merging
-        dl_df = datalogger_df_raw.sort_values('Absolute Timer (S)').reset_index(drop=True)
+        dl_df = datalogger_df.sort_values('Absolute Timer (S)').reset_index(drop=True)
 
         # Add columns to the datalogger dataframe giving the increase in double and triple coincidence events
         dl_df['delta_CW12'] = (dl_df['Events CW1&2'].diff().clip(lower=0).fillna(0))
@@ -389,7 +389,29 @@ class Scintillators_Processing:
 class CW_Analysis:
     def __init__(self, processor, datalogger_df, debug=True):
         '''
-        Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run. This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs
+        Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run.
+        This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs, and has the following methods:
+
+            Two top-level pipelines (call one of these directly; each runs the full analysis/plotting chain):
+                - rate_spectra_with_moyal(moyal_fit_ranges): fits a Moyal distribution per scintillator to extract the MPV, then runs the full chain using those fitted MPVs
+                - rate_spectra_with_fixed_MPVs(MPVs, noise_threshold, mip_window): same chain, but uses externally supplied per-scint MPVs (e.g. from a prior ground/temperature calibration) instead of fitting; no Moyal fit is performed, so the dashed fit curve is absent from every panel
+
+            Methods blocks called by the pipelines above:
+                - build_master_df(tolerance, MPVs): builds a master dataframe anchored on the datalogger timeline, merging each scintillator onto it independently by nearest-neighbour timestamp. Adds MIP-normalized, amplitude-calibrated, and cross-scintillator mean/std columns; also computes and stores the calibration constants (global_mean_mpv, amp_shifts) that the plotting methods read back
+                - fit_moyal(centers, rates, fit_x_min, fit_x_max, fit_x_n): fits a Moyal distribution to a single rate spectrum, returning the fit curve, a legend label, and the (MPV, eta, A) parameters (or None on failure)
+                - fill_between_steps(x, y1, y2, h_align, ax, lw, **kwargs): draws a fill band as horizontal step segments matching the histogram bin structure, rather than a smooth interpolation
+                - plot_all_scints_with_error(moyal_fit_ranges): per-scint rate spectra (all / non-coincident / coincident events) with Poisson uncertainty bands, plus a lower ratio panel showing each population's fraction of all events
+                - compute_and_normalize(moyal_fit_ranges, noise_threshold, MPVs, no_fit): coincident rate spectra (top row) and their MIP-normalized versions (bottom row, x-axis rescaled mV → MIP by each scint's MPV); stores per-scint fit/histogram results in self.stored for later methods to reuse
+                - plot_calibration_comparison(moyal_fit_ranges, noise_threshold): 3-row figure (raw MIP-normalized → + amplitude calibration → + amplitude and rate calibration) used to diagnose whether cross-scint detector differences are additive (overlay everywhere after the shift) or multiplicative (agree at 1 MIP but fan out off-peak)
+                - plot_density_heatmaps(): 2D density heatmap of cross-scint spread (std) vs. mean amplitude for top-fold coincidence events, MIP-normalized and rate-normalized by livetime
+                - plot_calibration_std_heatmaps(mip_window): side-by-side spread-vs-mean heatmaps, uncalibrated vs amplitude-calibrated, zoomed to the MIP peak region to show whether the calibration tightens the cross-scint spread
+
+            Key attributes created (in the order the methods run):
+                - self.coinc_tag, self.coinc_col : top-fold coincidence names built from the scint count (e.g. 'CW123', 'delta_CW123'); set in __init__
+                - self.stored          : list of per-scint dicts (rate, bin edges/centers, Moyal fit, popt with MPV = popt[0]); set in compute_and_normalize
+                - self.noise_threshold : MIP threshold separating noise from signal; set in compute_and_normalize
+                - self.master_df       : master dataframe on the datalogger timeline, with all normalized/calibrated/cross-scint columns; set in build_master_df
+                - self.mpv_per_scint, self.global_mean_mpv, self.amp_shifts : per-scint MPVs, their mean, and the per-scint mV shifts used for amplitude calibration; set in build_master_df
         '''
         self.processor = processor
         self.datalogger_df = datalogger_df
@@ -425,6 +447,8 @@ class CW_Analysis:
         tolerance : float
             merge_asof tolerance in seconds (default 0.1).
         '''
+
+        # Sort the datalogger by the absolute timer and reset the index for merging
         dl_df = self.datalogger_df.sort_values('Absolute Timer (S)').reset_index(drop=True)
         for k in self.processor.coinc_orders:
             src = self.processor._coinc_src_col(k)
@@ -433,11 +457,9 @@ class CW_Analysis:
         master = dl_df.copy()
 
         # ── Independently merge each scintillator onto the datalogger ────
-        for i in range(1, len(self.processor.fps) + 1):
-            scint_raw = getattr(self.processor, f'scint_{i}')[
-                ['Time[s]', 'SiPM[mV]', 'ADC[0-4095]']
-            ].sort_values('Time[s]').reset_index(drop=True)
-            scint_raw = scint_raw.rename(columns={
+        for i in range(1, len(self.processor.fps) + 1): # loop through each of the N scintillator
+            scint_raw = getattr(self.processor, f'scint_{i}')[['Time[s]', 'SiPM[mV]', 'ADC[0-4095]']].sort_values('Time[s]').reset_index(drop=True) # select for the relevant columns from the scintillator data
+            scint_raw = scint_raw.rename(columns={ # rename columns for clarity
                 'Time[s]':     f'Time_scint{i}[s]',
                 'SiPM[mV]':    f'SiPM_scint{i}[mV]',
                 'ADC[0-4095]': f'ADC_scint{i}[0-4095]',
