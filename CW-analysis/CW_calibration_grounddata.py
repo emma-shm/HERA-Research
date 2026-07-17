@@ -21,7 +21,7 @@ roomtemp_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/052920
 
 roomtemp_df = Datalogger_Processing(roomtemp_datalogger_fp, show_plots=False).process()
 
-three_scintillator_roomtemp = CW_Processing([roomtemp_top_scint_fp, roomtemp_mid_scint_fp, roomtemp_bot_scint_fp], roomtemp_df)
+three_scintillator_roomtemp = Scintillators_Processing([roomtemp_top_scint_fp, roomtemp_mid_scint_fp, roomtemp_bot_scint_fp], roomtemp_df)
 analysis_roomtemp = CW_Analysis(three_scintillator_roomtemp, roomtemp_df)
 analysis_roomtemp.rate_spectra_with_moyal(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])
 
@@ -35,7 +35,7 @@ cs137_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/ri
 
 cs_df = Datalogger_Processing(cs137_datalogger_fp).process()
 
-three_scintillator_cs = CW_Processing([cs137_top_scint_fp, cs137_mid_scint_fp, cs137_bot_scint_fp], cs_df)
+three_scintillator_cs = Scintillators_Processing([cs137_top_scint_fp, cs137_mid_scint_fp, cs137_bot_scint_fp], cs_df)
 analysis_cs = CW_Analysis(three_scintillator_cs, cs_df)
 analysis_cs.rate_spectra_with_fixed_MPVs(MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040])
 
@@ -52,7 +52,7 @@ cs137background_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data
 
 cs_df = Datalogger_Processing(cs137background_datalogger_fp).process()
 
-three_scintillator_cs = CW_Processing([cs137background_top_scint_fp, cs137background_mid_scint_fp, cs137background_bot_scint_fp], cs_df)
+three_scintillator_cs = Scintillators_Processing([cs137background_top_scint_fp, cs137background_mid_scint_fp, cs137background_bot_scint_fp], cs_df)
 analysis_cs = CW_Analysis(three_scintillator_cs, cs_df)
 analysis_cs.rate_spectra_with_fixed_MPVs(MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040])
 
@@ -92,7 +92,7 @@ for sec in sections_fridge:
         continue
     print(f"\n=== {sec['label']} ===")
     df        = Datalogger_Processing(sec['datalogger'], show_plots=False).process()
-    processor = CW_Processing(sec['scints'], df)
+    processor = Scintillators_Processing(sec['scints'], df)
     analysis  = CW_Analysis(processor, df)
     analysis.rate_spectra_with_moyal(moyal_fit_ranges=section_fit_ranges[sec['label']])
     fridge_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
@@ -129,7 +129,7 @@ for sec in sections_freezer:                 # ← was `sections` (the fridge on
         continue
     print(f"\n=== {sec['label']} ===")
     df        = Datalogger_Processing(sec['datalogger'], show_plots=False).process()
-    processor = CW_Processing(sec['scints'], df)
+    processor = Scintillators_Processing(sec['scints'], df)
     analysis  = CW_Analysis(processor, df)
     analysis.rate_spectra_with_moyal(moyal_fit_ranges=section_fit_ranges[sec['label']])
     freezer_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
@@ -163,7 +163,7 @@ for sec in sections_roomtemp:
         continue
     print(f"\n=== {sec['label']} ===")
     df        = Datalogger_Processing(sec['datalogger'], show_plots=False).process()
-    processor = CW_Processing(sec['scints'], df)
+    processor = Scintillators_Processing(sec['scints'], df)
     analysis  = CW_Analysis(processor, df)
     analysis.rate_spectra_with_moyal(moyal_fit_ranges=section_fit_ranges[sec['label']])
     roomtemp_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}

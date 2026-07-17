@@ -208,7 +208,7 @@ def analyze_flight_in_segments(
         seg_df = Datalogger_Processing(sec["datalogger"], show_plots=True).process()
         print(f"[DEBUG]   seg_df rows = {len(seg_df)}")  # DEBUG
 
-        proc   = CW_Processing(sec["scints"], seg_df)
+        proc   = Scintillators_Processing(sec["scints"], seg_df)
         ana    = CW_Analysis(proc, seg_df)
         ana.rate_spectra_with_fixed_MPVs(
             MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window
