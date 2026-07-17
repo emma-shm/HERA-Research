@@ -18,14 +18,14 @@ RESULTS_DIR = "plots"      # overwritten by set_results_dir()
 class Datalogger_Processing:
     def __init__(self, filepath, show_plots=False, debug=False):
       '''
-      Class for processing datalogger files
+      Class for processing datalogger files. Detects timer resets in the datalogger file, and adds a column showing the absolute timer without any resets.
+      
+      Creates key dataframes used in the rest of the analysis/by the other classes:
+            - self.df: the raw datalogger dataframe, read from the CSV, with no processing yet
+            - self.timerreset_segments: list of DataFrames, one per continuous run between timer resets
 
       Arg:
         filepath: string of filepath to datalogger CSV
-
-         Side effects:
-            self.df: the raw datalogger dataframe, read from the CSV, with no processing yet
-            self.timerreset_segments: list of DataFrames, one per continuous run between timer resets
       '''
       self.fp = filepath
 
@@ -51,10 +51,7 @@ class Datalogger_Processing:
 
     def subplots(self, xaxis='Timer[S]', title=None):
       '''
-      Method for subplots of datalogger data
-
-      Args:
-        Columns
+      Method for subplots of datalogger data, mostly just for visualization. Plots the number of events, pressure, and temperature vs the specified x-axis (Default is Absolute Timer (S)).
       '''
       if not self.show_plots:                 # don't even build the figure
           return
@@ -158,10 +155,18 @@ class Datalogger_Processing:
 class CW_Processing:
     def __init__(self, filepaths, datalogger_df_raw, show_plots=False, debug=False):
         '''
-        Class for processing scintillator files
-
+        Class for processing scintillator files, for any number of scintillators. Instantiate the class once with a list of filepaths for all scintillator TXT files and the raw datalogger dataframe.
+        The class has the following key attributes, all of which are executed immediately when the class is instantiated:
+                - static methods: _coinc_tag(k) and _coinc_src_col(k) for arbitrary-N coincidence naming, so that if you have 3 scintillators, you get CW12, CW123 for coincidence columns instead of hardcoding it.
+                - apply_deadtime_correction(i): computes deadtime-corrected per-event livetime for a given scintillator, returning the results as an array
+                - align_with_datalogger(): create aligned_scint{i} dataframe from each of the N scintillators (i=1,2,..,N); each dataframe contains the original scintillator columns plus the datalogger columns, aligned by nearest-neighbour timestamp matching;
+                                            automatically computes deadtime-corrected livetime for each scintillator and adds it as a column
+                - plot_all_SiPM_distributions(): plots the combined SiPM voltage distribution across all scintillators
+                - plot_SiPM_histograms(i): plots the SiPM voltage distribution for a given scintillator, with separate histograms for all events and each coincidence order (CW12, CW123, etc.)
+                
         Arg:
             filepaths: list of filepath strings for each scintillator TXT
+            datalogger_df_raw: raw datalogger dataframe (with Absolute Timer column already created)
         '''
         self.fps = filepaths
         
@@ -202,8 +207,7 @@ class CW_Processing:
 
     def apply_deadtime_correction(self, i):
         """
-        Computes deadtime-corrected per-event livetime for scintillator i,
-        using the same approach as getCosmicWatch() in the reference script.
+        Computes deadtime-corrected per-event livetime for scintillator i.
 
         For each event row, livetime = (time elapsed since last event) - (deadtime accumulated since last event)
         This is then attached to the scintillator DataFrame as a column before merging.
@@ -218,52 +222,42 @@ class CW_Processing:
         time  = scint_df['Time[s]'].values
         deadt = scint_df['Deadtime[s]'].values
 
-        # delta deadtime per event (same np.diff + prepend pattern as colleague's script)
-        event_deadt_s    = np.diff(np.append([0], deadt))
-        event_livetime_s = np.diff(np.append([0], time)) - event_deadt_s
+        # delta deadtime per event
+        event_deadt_s    = np.diff(np.append([0], deadt)) # add 0 at the start to align with the first event, then compute the difference between consecutive deadtime values
+        event_livetime_s = np.diff(np.append([0], time)) - event_deadt_s # take livetime as the difference between consecutive time values minus the deadtime values for each time value
 
         # clip negatives — can occur at file boundaries or timer resets
         event_livetime_s = event_livetime_s.clip(min=0)
 
-        return pd.Series(event_livetime_s, index=scint_df.index,
-                        name=f'livetime_scint{i}[s]')
+        return pd.Series(event_livetime_s, index=scint_df.index, name=f'livetime_scint{i}[s]')
 
     def align_with_datalogger(self, datalogger_df_raw, tolerance=0.5):
         '''
-        Independently align each scintillator to the datalogger.
-
-        Every scintillator dataframe preserves ALL of its original rows.
-        Datalogger columns are merged onto each scintillator independently
-        using nearest-neighbour timestamp matching.
-
-        Results stored as:
-            self.aligned_scint1
-            self.aligned_scint2
-            ...
+        Independently align each scintillator to the datalogger. Every scintillator dataframe preserves ALL of its original rows.
+        Datalogger columns are merged onto each scintillator independently using nearest-neighbour timestamp matching, creating a new aligned_scint{i} dataframe for each scintillator which contains the original scintillator columns plus the datalogger columns.
+        The datalogger columns are only filled in for rows where a match was found within the specified tolerance (default 0.5 seconds).
         '''
 
+        # Create a copy of the datalogger dataframe sorted by Absolute Timer (S) for merging
         dl_df = datalogger_df_raw.sort_values('Absolute Timer (S)').reset_index(drop=True)
 
-        # ── Per-row coincidence deltas on datalogger ───────────────────────
+        # Add columns to the datalogger dataframe giving the increase in double and triple coincidence events
         dl_df['delta_CW12'] = (dl_df['Events CW1&2'].diff().clip(lower=0).fillna(0))
         dl_df['delta_CW123'] = (dl_df['Events CW1&2&3'].diff().clip(lower=0).fillna(0))
 
         # ── Independently align each scintillator ──────────────────────────
-        for i in range(1, len(self.fps) + 1):
+        for i in range(1, len(self.fps) + 1): # loop through the scintillators
 
             print(f"\nAligning scintillator {i}...")
 
-            # scintillator dataframe
-            scint_df = getattr(self, f'scint_{i}')[
-                ['Time[s]', 'SiPM[mV]', 'ADC[0-4095]',
-                'Coincident[bool]', 'Deadtime[s]']
-            ].copy()
+            # create scintillator dataframe with only subset of the full set of colummns
+            scint_df = getattr(self, f'scint_{i}')[['Time[s]', 'SiPM[mV]', 'ADC[0-4095]','Coincident[bool]', 'Deadtime[s]']].copy()
 
-            # deadtime-corrected livetime
+            # apply deadtime corrections using the apply_deadtime_correction method, add the live times to the scintillator data
             livetime_series = self.apply_deadtime_correction(i)
             scint_df[f'livetime_scint{i}[s]'] = livetime_series.values
 
-            # rename columns
+            # rename columns to include scintillator index, for clarity when merging with datalogger; also sort by timer column
             scint_df = scint_df.rename(columns={
                 'Time[s]':          f'Time_scint{i}[s]',
                 'SiPM[mV]':         f'SiPM_scint{i}[mV]',
@@ -301,8 +295,8 @@ class CW_Processing:
 
             # ── Run-averaged rates ─────────────────────────────────────────
             if total_livetime_s > 0:
-                cw12_rate = (aligned['delta_CW12'].fillna(0).sum()/ total_livetime_s)
-                cw123_rate = (aligned['delta_CW123'].fillna(0).sum()/ total_livetime_s)
+                cw12_rate = (aligned['delta_CW12'].fillna(0).sum()/ total_livetime_s) # calculate the average rate of double coincidence events by dividing the total number of double coincidence events recorded in the datalogger by the total livetime
+                cw123_rate = (aligned['delta_CW123'].fillna(0).sum()/ total_livetime_s) # same for triple coincidence events
 
                 print(f"Run-averaged CW1+2 rate:   {cw12_rate:.3f} s^-1")
                 print(f"Run-averaged CW1+2+3 rate: {cw123_rate:.3f} s^-1")
@@ -310,10 +304,9 @@ class CW_Processing:
             # ── Per-order coincidence tagging ─────────────────────────────
             for k in self.coinc_orders:
                 tag = self._coinc_tag(k)
-                aligned[f'SiPM_mV_{tag}_scint{i}'] = (
-                    aligned[f'SiPM_scint{i}[mV]'].where(aligned[f'delta_{tag}'] > 0))
+                aligned[f'SiPM_mV_{tag}_scint{i}'] = (aligned[f'SiPM_scint{i}[mV]'].where(aligned[f'delta_{tag}'] > 0)) # create a new column for each coincidence order, where the SiPM voltage is only filled in for rows where the corresponding delta_CW{tag} is greater than 0 (i.e., a coincidence event occurred), to be used later for MIP normalization and cross-scintillator analysis
 
-            # ── Store aligned dataframe ───────────────────────────────────
+            # ── Store aligned dataframe for given scintillator, setting as a class attribute ─────────────
             setattr(self, f'aligned_scint{i}', aligned)
             setattr(self, f'total_livetime_scint{i}_s', total_livetime_s)
 
