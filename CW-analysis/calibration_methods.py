@@ -152,7 +152,7 @@ class Datalogger_Processing:
       self.df['Absolute Timer (S)'] = absolute_timers
 
 
-class CW_Processing:
+class Scintillators_Processing:
     def __init__(self, filepaths, datalogger_df_raw, show_plots=False, debug=False):
         '''
         Class for processing scintillator files, for any number of scintillators. Instantiate the class once with a list of filepaths for all scintillator TXT files and the raw datalogger dataframe.
@@ -389,8 +389,7 @@ class CW_Processing:
 class CW_Analysis:
     def __init__(self, processor, datalogger_df, debug=True):
         '''
-        processor is instance of CW_Processing class
-        datalogger_df is the raw datalogger dataframe
+        Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run. This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs
         '''
         self.processor = processor
         self.datalogger_df = datalogger_df
@@ -653,7 +652,7 @@ class CW_Analysis:
         # Loop over each scintillator, pulling the top-row and bottom-row axes together
         for scint_idx, (ax, ax2) in enumerate(zip(axes[0], axes[1]), start=1):
 
-            # Aligned dataframe produced by CW_Processing for this scintillator
+            # Aligned dataframe produced by Scintillators_Processing for this scintillator
             df = getattr(self.processor, f'aligned_scint{scint_idx}')
 
             # Column holding the SiPM peak voltage (in mV) for this scintillator
@@ -709,7 +708,7 @@ class CW_Analysis:
             counts_coinc, _ = np.histogram(coinc_events, bins=bin_edges)
             counts_no_coinc, _ = np.histogram(no_coinc_events, bins=bin_edges)
 
-            # Per-scintillator livetime (deadtime-corrected) produced by CW_Processing.
+            # Per-scintillator livetime (deadtime-corrected) produced by Scintillators_Processing.
             # Each scintillator gets its OWN livetime — they can't share one.
             total_livetime_s = getattr(self.processor, f'total_livetime_scint{scint_idx}_s')
 
@@ -1493,7 +1492,7 @@ def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetim
 #     """
 #     dl_processor = Datalogger_Processing(datalogger, show_plots=Show_plots, debug=Debug).process()
 
-#     scintillators_processor = CW_Processing(scintillators, dl_processor, show_plots=Show_plots, debug=Debug)
+#     scintillators_processor = Scintillators_Processing(scintillators, dl_processor, show_plots=Show_plots, debug=Debug)
 #     analysis = CW_Analysis(scintillators_processor, dl_processor, debug=Debug)
     
 #     if Moyal_fit_ranges is not None:
