@@ -21,7 +21,7 @@ built around three classes plus a set of top-level helpers.
   into a single continuous `Absolute Timer (S)` column so multi-run files
   reprocess cleanly.
 
-- **`CW_Processing`** — reads each scintillator file, applies a deadtime
+- **`Scintillators_Processing`** — reads each scintillator file, applies a deadtime
   correction to compute per-event livetime, and aligns every scintillator to
   the datalogger independently via nearest-timestamp `merge_asof`. Handles
   arbitrary N-fold coincidence naming (CW12, CW123, …), tags coincidence events
@@ -39,7 +39,7 @@ built around three classes plus a set of top-level helpers.
 **Helper functions, that CAN be imported and used in other scripts if desired**
 
 - **`processing_pipeline(datalogger, scintillators, Moyal_fit_ranges=None, MPVs=None, ...)`**
-  — one-call entry point that chains `Datalogger_Processing` → `CW_Processing`
+  — one-call entry point that chains `Datalogger_Processing` → `Scintillators_Processing`
   → `CW_Analysis`. Pass either Moyal fit ranges (to fit each spectrum) or fixed
   MPVs (to skip fitting); returns the datalogger processor, scintillator
   processor, and analysis instances.
@@ -135,7 +135,7 @@ Every run follows the same three-step pattern:
 
 ```python
 from calibration_methods import (
-    Datalogger_Processing, CW_Processing, CW_Analysis, set_results_dir
+    Datalogger_Processing, Scintillators_Processing, CW_Analysis, set_results_dir
 )
 
 set_results_dir("roomtemp")   # optional: save plots + CSVs to ./roomtemp_results/
@@ -144,7 +144,7 @@ set_results_dir("roomtemp")   # optional: save plots + CSVs to ./roomtemp_result
 df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
 
 # 2) align each scintillator to the datalogger (deadtime-corrected livetime)
-proc = CW_Processing([scint1_fp, scint2_fp, scint3_fp], df)
+proc = Scintillators_Processing([scint1_fp, scint2_fp, scint3_fp], df)
 
 # 3) calibrate + plot — pick ONE mode:
 analysis = CW_Analysis(proc, df)
