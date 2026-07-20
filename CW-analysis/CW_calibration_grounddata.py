@@ -12,35 +12,45 @@ from calibration_methods import *
 import inspect
 
 
+# General approach: Calibration vs Analysis Runs
+# For calibration runs, you've let detectors continuously colelct data and need to manually fit Moyal distribution to get calibration cosntants (MPVs)
+# For analysis runs, you're not manually fitting the Moyal distribution, but rather, using the calibration constants from the calibration run as arguments for the moyal fitting
+# For both, the initial steps of the pipeline are Datalogger_Processing --> Scintillators_Processing --> CW_Analysis, the only difference is for a CALIBRATION RUN, you then
+# do rate_spectra_with_moyal(), starting with guesses of the x-axis ranges for fitting, and then look at where they fall on the plot and adjust to the MIP bump by re-running the script
+# For an ANALYSIS RUN, you do rate_spectra_with_fixed_MPVs() and use MPVs calculated from the calibation run as an input.
 
-# ============================ 14 hour room temp run =============================
+
+
+# ============================ 14 hour room temp: CALIBRATION RUN =============================
 roomtemp_datalogger_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/05292026/DataLogger/AHD002_roomtemp?.csv' # @param {type:"string"}
 roomtemp_top_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/05292026/SDleft/SDleft_AxLab_M_024_roomtemp.txt' # @param {type:"string"}
 roomtemp_mid_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/05292026/SDmiddle/SDmiddle_AxLab_M_024_roomtemp.txt' # @param {type:"string"}
 roomtemp_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/05292026/SDright/SDright_AxLab_M_024_roomtemp.txt' # @param {type:"string"}
 
+# Processing pipeline for ground data where you need to fit the Moyal distribution and determine the MPVs
+# Datalogger_Processing --> Scintillators_Processing --> CW_Analysis, then use the method rate_spectra_with_moyal for Moyal fitting;
+        # must be used as a guess and check method, so you run once with random x-axis ranges for fitting, and then look at where they fall on the plot and adjust to the MIP bump
 roomtemp_df = Datalogger_Processing(roomtemp_datalogger_fp, show_plots=False).process()
-
 three_scintillator_roomtemp = Scintillators_Processing([roomtemp_top_scint_fp, roomtemp_mid_scint_fp, roomtemp_bot_scint_fp], roomtemp_df)
 analysis_roomtemp = CW_Analysis(three_scintillator_roomtemp, roomtemp_df)
 analysis_roomtemp.rate_spectra_with_moyal(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])
 
 
 
-# ============================ Cs 137 run =============================
+# ============================ Cs 137: ANALYSIS RUN =============================
 cs137_datalogger_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/data logger/AHD001.csv' # @param {type:"string"}
 cs137_top_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/left/leftAxLab_M_029.txt' # @param {type:"string"}
 cs137_mid_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/middle/middleAxLab_M_028.txt' # @param {type:"string"}
 cs137_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/right/rightAxLab_M_029.txt'
 
+# Processing pipeline for any analysis data where you DON'T need to fit the Moyal distribution -- you ALREADY DID MOYAL FIT WITH OTHER RUNS OF THE SAME SCINTILLATORS, AND NEED TO APPLY RESULTS OF THOSE CALIBRATIONS CONSTANTS TO GROUND DATA
+# Datalogger_Processing --> Scintillators_Processing --> CW_Analysis again, only difference is that you now run rate_spectra_with_fixed_MPVs() and give it the MPVs output from the calibation run you're using 
 cs_df = Datalogger_Processing(cs137_datalogger_fp).process()
-
 three_scintillator_cs = Scintillators_Processing([cs137_top_scint_fp, cs137_mid_scint_fp, cs137_bot_scint_fp], cs_df)
 analysis_cs = CW_Analysis(three_scintillator_cs, cs_df)
 analysis_cs.rate_spectra_with_fixed_MPVs(MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040])
 
 plot_density_heatmap_ampcal(analysis_cs, normalize_by_livetime=True)
-
 
 
 
@@ -174,7 +184,7 @@ for sec in sections_roomtemp:
 
 
 
-# ============================ Fitting =============================
+# ============================ Fitting (not a linear fit, but code could still be applied/modified for fitting nonlinear trends) =============================
 
 # ──────────────────────────────────────────────────────────────────────────
 # Time-binned global-mean-MPV vs temperature calibration
