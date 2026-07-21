@@ -531,6 +531,7 @@ class CW_Analysis:
         save_table(master, "master_df")
         n = len(self.processor.fps)
         save_summary({
+            "total_event_rate":        self.processor.datalogger_df['Events CW1&2&3'].sum() / self.processor.datalogger_df['Absolute Timer (S)'].max(),
             "mpv_per_scint":        self.mpv_per_scint,
             "global_mean_mpv":      self.global_mean_mpv,
             "amp_shifts":           self.amp_shifts,
