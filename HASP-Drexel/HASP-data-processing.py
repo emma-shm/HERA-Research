@@ -39,7 +39,7 @@ print(df2.head(3))
 
 # === Coincidence-group config ============================================
 # Maps each "column" (physical stack of 4 scints) to the trigger numbers
-# believed to belong to it. EDIT THIS once colleagues confirm wiring.
+# believed to belong to it. EDIT THIS once Eray confirms wiring.
 # Order within each list matters: it defines the cumulative coincidence
 # chain (e.g. col1_CW_1&2 uses the first two, col1_CW_1&2&3 the first three).
 COINCIDENCE_GROUPS = {
@@ -48,6 +48,23 @@ COINCIDENCE_GROUPS = {
     'col3': [3, 7, 11, 15],
     'col4': [4, 8, 12, 16],
 }
+
+## Layer 1
+#  1  2
+#  3  4
+
+## Layer 2
+#  5  6
+#  7  8
+
+## Layer 3
+#  9   10
+#  11  12
+
+## Layer 4
+#  13  14`
+#  15  16
+
 
 # All plots get saved to ./results/ relative to wherever this script is run.
 # exist_ok=True so re-runs don't crash if the folder is already there.
