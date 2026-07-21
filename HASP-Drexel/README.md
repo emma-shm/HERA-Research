@@ -2,7 +2,7 @@
 Scripts for processing and analyzing HASP data. Data structure is different than that of the normal HERA CosmicWatch data, and requires different analysis methods.
 
 
-## HASP-data-processing.py
+## HASP_data_processing.py
 
 Main orchestration script. Loads the raw teensy CSVs for one run, merges them into a single per-event DataFrame, and hands that off to + Scintillator_Processing for analysis. No analysis logic in this script — just I/O, pre-processing, and dispatch.
 + Raw data per run: two event-driven SiPM-teensy CSVs (sipm_teensy_1, sipm_teensy_2), one row per detection event. Each file has 16 trigger_NN_binary columns (1 = scint NN fired) and 16 trigger_NN_signal_time columns (timer value when it fired). Both teensies log all 16 trigger columns — that redundancy is what lets us sync them. Teensy 1 carries real ADC values for layers 1 and 3; teensy 2 for layers 2 and 4.
@@ -14,5 +14,5 @@ Main orchestration script. Loads the raw teensy CSVs for one run, merges them in
 Sample data files provided by Eray that are meant to exemplify what the data will look like. The data in these CSVs was generated randomly, but patterns do not match for the event detections on each scintillator at corresponding time stamps since the data was generated randomly, so I generated my own data files, **sipm_teensy_1_test.csv and sipm_teensy_2_test.csv**
 
 
-## HASP-calibration-methods.py
+## HASP_calibration_methods.py
 NOT YET COMPLETE. Script that should have the same calibration and analysis functionality as the calibration_methods.py script for the three-scintillator, standard HERA setup but adapted to the sixteen scintillator data.
