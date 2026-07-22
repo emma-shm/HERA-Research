@@ -167,15 +167,16 @@ t1 = df1['event_time_unix_s'].values
 t2 = df2['event_time_unix_s'].values
 
 # Compute the median offset between the two teensies' clocks, then shift t1 onto t2's clock for nearest-neighbor pairing.
-j = np.clip(np.searchsorted(t2, t1), 1, len(t2) - 1)
-near = np.where(np.abs(t1 - t2[j - 1]) < np.abs(t1 - t2[j]), j - 1, j)
-raw = t1 - t2[near]
+j = np.clip(np.searchsorted(t2, t1), 1, len(t2) - 1)                    # t1 and t2 are arrays of event times; searchshorted looks in t2 for the insertion point of each t1 value so the event times are sorted (ie. t2 = np.array([10.0, 20.0, 30.0, 40.0]), t1 = np.array([22.5, 5.0, 31.0]), and np.searchsorted(t2, t1) -> array([2, 0, 3]), or the indices of where to insert)
+                                                                        # np.clip ensures that the indices are within the bounds of t2 (1 to len(t2)-1) so we don't go out of bounds when checking neighbors
+near = np.where(np.abs(t1 - t2[j - 1]) < np.abs(t1 - t2[j]), j - 1, j) # you’re taking the j array of indices and returning an the left nearest neighbor index (j-1) where the distance to the left nearest neighbor (j-1) is closer than the right nearest. otherwise, if the right nearest neighbor is closer, then let the element be the right nearest neighbor index
+raw = t1 - t2[near] # raw is array of time differences between each t1 event time and its nearest t2 event time (after accounting for the nearest neighbor search above)
 CLOCK_OFFSET = np.median(raw[np.abs(raw) < MERGE_TOLERANCE])
 print(f"\nEstimated T1-T2 clock offset: {CLOCK_OFFSET*1e3:.2f} ms")
 
 # --- every candidate pair within tolerance, on the shifted clock -----------
-a = t1 - CLOCK_OFFSET
-lo = np.searchsorted(t2, a - MERGE_TOLERANCE)
+a = t1 - CLOCK_OFFSET # create array of time values that are t1 event times shifted to be aligned with t2 event times
+lo = np.searchsorted(t2, a - MERGE_TOLERANCE) 
 hi = np.searchsorted(t2, a + MERGE_TOLERANCE)
 I = np.repeat(np.arange(len(a)), hi - lo)
 J = np.concatenate([np.arange(l, h) for l, h in zip(lo, hi)])
