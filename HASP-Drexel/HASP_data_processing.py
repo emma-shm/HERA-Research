@@ -17,8 +17,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # === File paths (edit per run) ============================================
-teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_test.csv'
-teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_test.csv'
+teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_2hr.csv'
+teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_2hr.csv'
 
 # Load raw teensy CSVs
 df1 = pd.read_csv(teensy1_fp)
@@ -151,15 +151,54 @@ df2 = df2.rename(columns=t2_binary_renames)
 df2 = df2.rename(columns={'cpu_temperature': 'cpu_temperature_t2'})
 
 
-# === Merge: nearest event_time_unix_s within tolerance ===========================
-# For every df1 row, find the df2 row with the closest event_time_unix_s;
-# if none is within MERGE_TOLERANCE, df2 columns come back as NaN.
-merged = pd.merge_asof(
-    df1, df2,
-    on='event_time_unix_s',
-    direction='nearest',
-    tolerance=MERGE_TOLERANCE,
-)
+
+
+# === Merge: one-to-one nearest match within tolerance =====================
+# Was using merge_asof with nearest neighbor before, but two df1 rows can both claim the same teensy2 row because merge_asof picks the nearest teensy2 row without accounting for the boards' constant ~30 ms clock offset
+# and without preventing two teensy1 rows from claiming the same teensy2 row, and "nearest" ignores the constant clock offset between boards.
+# Fix both: shift onto a common clock, then pair off closest-first.
+
+# both CSVs carry an 'extra_status' column; disambiguate before concatenating
+df1 = df1.rename(columns={'extra_status': 'extra_status_t1'})
+df2 = df2.rename(columns={'extra_status': 'extra_status_t2'})
+
+# select event time columns as numpy arrays for fast nearest-neighbor search
+t1 = df1['event_time_unix_s'].values
+t2 = df2['event_time_unix_s'].values
+
+# Compute the median offset between the two teensies' clocks, then shift t1 onto t2's clock for nearest-neighbor pairing.
+j = np.clip(np.searchsorted(t2, t1), 1, len(t2) - 1)
+near = np.where(np.abs(t1 - t2[j - 1]) < np.abs(t1 - t2[j]), j - 1, j)
+raw = t1 - t2[near]
+CLOCK_OFFSET = np.median(raw[np.abs(raw) < MERGE_TOLERANCE])
+print(f"\nEstimated T1-T2 clock offset: {CLOCK_OFFSET*1e3:.2f} ms")
+
+# --- every candidate pair within tolerance, on the shifted clock -----------
+a = t1 - CLOCK_OFFSET
+lo = np.searchsorted(t2, a - MERGE_TOLERANCE)
+hi = np.searchsorted(t2, a + MERGE_TOLERANCE)
+I = np.repeat(np.arange(len(a)), hi - lo)
+J = np.concatenate([np.arange(l, h) for l, h in zip(lo, hi)])
+
+# --- accept closest-first, retiring both rows once used --------------------
+partner = np.full(len(df1), -1)          # partner[k] = df2 row paired to df1 row k
+taken = np.zeros(len(df2), bool)
+for k in np.argsort(np.abs(a[I] - t2[J]), kind='stable'):
+    i, j = I[k], J[k]
+    if partner[i] >= 0 or taken[j]:
+        continue                         # one of the two is already spoken for
+    partner[i] = j
+    taken[j] = True
+
+# --- assemble `merged` with the same layout merge_asof produced ------------
+df2_side = df2.drop(columns=[c for c in df2.columns if c in df1.columns])
+right = df2_side.iloc[np.where(partner >= 0, partner, 0)].reset_index(drop=True)
+right.loc[partner < 0, :] = np.nan       # unmatched df1 rows get NaN on the t2 side
+
+merged = pd.concat([df1.reset_index(drop=True), right], axis=1)
+print(f"Pairs: {taken.sum()}  |  double-claimed T2 rows: 0 by construction")
+
+
 
 
 # 3. Right after merge_asof, before orphans are appended — see how many matched vs dropped
@@ -171,7 +210,7 @@ print(f"T1 rows with NO T2 match (will be orphan_t1): {n_unmatched_t1}")
 
 
 # Add teensy-2 orphans (events that didn't have time match across teensies)
-matched_t2_idx = merged['_t2_orig_idx'].dropna().astype(int).tolist() # get list of original indices of ALL teensy2 rows that made it into the merged dataframe
+matched_t2_idx = df2['_t2_orig_idx'].values[partner[partner >= 0]].tolist()
 t2_orphans = df2[~df2['_t2_orig_idx'].isin(matched_t2_idx)].copy() # slice df2 by row, down to just those where the original index is NOT in the merged dataframe's list of matches indices; result is row of teensy2 orphan indices
 merged = pd.concat([merged, t2_orphans], ignore_index=True, sort=False) # stack the teensy2 orphan rows onto the bottom of the merged DataFrame, resetting the index to be continuous from 0 again
 
