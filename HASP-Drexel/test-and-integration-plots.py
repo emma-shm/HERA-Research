@@ -3,6 +3,11 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+
+# =======================================================================================
+# PLOTTING RAW DOWNLINK DATA FIRST (NOT FROM SD CARDS, DIRECTLY PLOTTING AS FUNCTION OF PACKET NUMBERS)
+# =======================================================================================
+
 # path to CSV file, downloaded from the GUI
 df = pd.read_csv('/Users/emmamartignoni/Downloads/downlink_decoded (1).csv')
 
@@ -23,7 +28,7 @@ df = pd.read_csv('/Users/emmamartignoni/Downloads/downlink_decoded (1).csv')
 #                "sipm_15_trigger_count",
 #                "sipm_16_trigger_count"]
 
-headers = [f"sipm_trigger_count_{i:02d}" for i in range(1, 17)]  # Generate headers dynamically
+headers = [f"sipm_{i:02d}_trigger_count" for i in range(1, 17)]  # Generate headers dynamically
 
 time_marks = [
     (524,   "8:37 am"),
@@ -33,6 +38,9 @@ time_marks = [
     (24952, "1:56 pm"),
     (26764, "2:11 pm"),
 ]
+
+output_dir = "test_and_integration_plots"
+os.makedirs(output_dir, exist_ok=True)
 
 def add_time_marks(ax):
     for pkt, label in time_marks:
@@ -51,7 +59,7 @@ for h in headers:
     data2.append(df[h].cumsum()) # cumsum returns the cumulative sum of the values in the column, so at each packet #, it will give you the total 
 
 
-fig_reg = plt.figure(figsize=(10, 6))
+fig_reg = plt.figure(figsize=(15, 10))
 plt.title("Count versus Time")
 plt.plot(df['packet_number'], data1[0], label='CH1', color='tomato', ls='-')
 plt.plot(df['packet_number'], data1[1], label='CH2', color='tomato', ls='--')
@@ -75,7 +83,7 @@ plt.ylabel('Counts')
 plt.legend()
 plt.savefig('count_vs_time.png')
 
-fig_cum = plt.figure(figsize=(10, 6))
+fig_cum = plt.figure(figsize=(15, 10))
 plt.title("Cumulative Count versus Time")
 plt.plot(df['packet_number'], data2[0], label='CH1', color='tomato', ls='-')
 plt.plot(df['packet_number'], data2[1], label='CH2', color='tomato', ls='--')
@@ -99,8 +107,12 @@ plt.ylabel('Counts')
 plt.legend()
 plt.savefig('cumulative_count_vs_time.png')
 
+
+
+
+# ======== RAW COUNT DATA SUBPLOTS ===================================================
 # ======== 2x2 subplots where each subplot shows the 4 channels in each LAYER ========
-fig_layer, axes1 = plt.subplots(2, 2, figsize=(10, 8))
+fig_layer, axes1 = plt.subplots(2, 2, figsize=(15,10))
 plt.suptitle("Layer Graphs")
 axes1[0,0].set_title("Layer 1")
 axes1[0,0].plot(df['packet_number'], data1[0], label='CH1', color='tomato')
@@ -134,7 +146,7 @@ for ax in axes1.flat:
 plt.savefig('layer_graphs.png')
 
 # ======== 2x2 subplots where each subplot shows the 4 channels in each COLUMN ========
-fig_col, axes2 = plt.subplots(2, 2, figsize=(10, 8))
+fig_col, axes2 = plt.subplots(2, 2, figsize=(15,10))
 plt.suptitle("Column Graphs")
 axes2[0,0].set_title("Col 1")
 axes2[0,0].plot(df['packet_number'], data1[0], label='CH1', color='tomato')
@@ -163,13 +175,15 @@ axes2[1,1].plot(df['packet_number'], data1[7], label='CH8', color='skyblue')
 axes2[1,1].plot(df['packet_number'], data1[11], label='CH12', color='forestgreen')
 axes2[1,1].plot(df['packet_number'], data1[15], label='CH16', color='purple')
 axes2[1,1].legend()
-for ax in axes1.flat:
+for ax in axes2.flat:
     add_time_marks(ax)
 plt.savefig('column_graphs.png')
 
 
+
+# ========= CUMULATIVE COUNTS SUBPLOTS =============================================================
 # ========= 2x2 subplots where each subplot shows the 4 channels in each LAYER (cumulative) ========
-fig_layer_cum, axes1 = plt.subplots(2, 2, figsize=(10, 8))
+fig_layer_cum, axes1 = plt.subplots(2, 2, figsize=(15,10))
 plt.suptitle("Layer Graphs Cumulative")
 axes1[0,0].set_title("Layer 1")
 axes1[0,0].plot(df['packet_number'], data2[0], label='CH1', color='tomato')
@@ -204,7 +218,7 @@ plt.savefig('layer_graphs_cumulative.png')
 
 
 # ======== 2x2 subplots where each subplot shows the 4 channels in each COLUMN (cumulative) ========
-fig_col_cum, axes2 = plt.subplots(2, 2, figsize=(10, 8))
+fig_col_cum, axes2 = plt.subplots(2, 2, figsize=(15,10))
 plt.suptitle("Column Graphs Cumulative")
 axes2[0,0].set_title("Col 1")
 axes2[0,0].plot(df['packet_number'], data2[0], label='CH1', color='tomato')
@@ -233,7 +247,7 @@ axes2[1,1].plot(df['packet_number'], data2[7], label='CH8', color='skyblue')
 axes2[1,1].plot(df['packet_number'], data2[11], label='CH12', color='forestgreen')
 axes2[1,1].plot(df['packet_number'], data2[15], label='CH16', color='purple')
 axes2[1,1].legend()
-for ax in axes1.flat:
+for ax in axes2.flat:
     add_time_marks(ax)
 plt.savefig('column_graphs_cumulative.png')
 
