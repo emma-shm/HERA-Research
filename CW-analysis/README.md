@@ -28,7 +28,7 @@ built around three classes plus a set of top-level helpers.
   per scintillator, tracks per-scint and total deadtime-corrected livetime, and
   plots the SiPM voltage distributions (per-scint and combined).
 
-- **`CW_Analysis`** — assembles a master dataframe anchored on the datalogger
+- **`Detector_Analysis`** — assembles a master dataframe anchored on the datalogger
   timeline. Normalizes each scintillator's SiPM amplitude to MIP units using
   per-scintillator MPVs (either from Moyal fits or supplied as fixed values),
   applies an amplitude calibration that shifts each channel to a global-mean
@@ -40,7 +40,7 @@ built around three classes plus a set of top-level helpers.
 
 - **`processing_pipeline(datalogger, scintillators, Moyal_fit_ranges=None, MPVs=None, ...)`**
   — one-call entry point that chains `Datalogger_Processing` → `Scintillators_Processing`
-  → `CW_Analysis`. Pass either Moyal fit ranges (to fit each spectrum) or fixed
+  → `Detector_Analysis`. Pass either Moyal fit ranges (to fit each spectrum) or fixed
   MPVs (to skip fitting); returns the datalogger processor, scintillator
   processor, and analysis instances.
 - **`split_flight_and_background(...)`** — splits a run into flight vs.
@@ -135,7 +135,7 @@ Every run follows the same three-step pattern:
 
 ```python
 from calibration_methods import (
-    Datalogger_Processing, Scintillators_Processing, CW_Analysis, set_results_dir
+    Datalogger_Processing, Scintillators_Processing, Detector_Analysis, set_results_dir
 )
 
 set_results_dir("roomtemp")   # optional: save plots + CSVs to ./roomtemp_results/
@@ -147,7 +147,7 @@ df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
 proc = Scintillators_Processing([scint1_fp, scint2_fp, scint3_fp], df)
 
 # 3) calibrate + plot — pick ONE mode:
-analysis = CW_Analysis(proc, df)
+analysis = Detector_Analysis(proc, df)
 analysis.rate_spectra_with_moyal(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
 # analysis.rate_spectra_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])                # or supply MPVs
 ```
