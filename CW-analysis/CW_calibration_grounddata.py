@@ -15,28 +15,28 @@ import inspect
 # General approach: Calibration vs Analysis Runs
 # For calibration runs, you've let detectors continuously colelct data and need to manually fit Moyal distribution to get calibration cosntants (MPVs)
 # For analysis runs, you're not manually fitting the Moyal distribution, but rather, using the calibration constants from the calibration run as arguments for the moyal fitting
-# For both, the initial steps of the pipeline are Datalogger_Processing --> Scintillators_Processing --> CW_Analysis, the only difference is for a CALIBRATION RUN, you then
+# For both, the initial steps of the pipeline are Datalogger_Processing --> Scintillators_Processing --> Detector_Analysis, the only difference is for a CALIBRATION RUN, you then
 # do rate_spectra_with_moyal(), starting with guesses of the x-axis ranges for fitting, and then look at where they fall on the plot and adjust to the MIP bump by re-running the script
 # For an ANALYSIS RUN, you do rate_spectra_with_fixed_MPVs() and use MPVs calculated from the calibation run as an input.
 
 
-# ============================ 2 hour room temp: CALIBRATION RUN =============================
-twohour_datalogger_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_DATALOGGER.csv'
-twohour_top_scint_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_TOP.txt'
-twohour_mid_scint_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_MID.txt'
-twohour_bot_scint_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_BOT.txt'
+# # ============================ 2 hour room temp: CALIBRATION RUN =============================
+# twohour_datalogger_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_DATALOGGER.csv'
+# twohour_top_scint_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_TOP.txt'
+# twohour_mid_scint_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_MID.txt'
+# twohour_bot_scint_fp = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/2026_ Jan 15 (Ground Testing -- 45 deg) 2/2HR_Ground_Test_0_Deg_BOT.txt'
 
-scint_df = Datalogger_Processing(twohour_datalogger_fp, show_plots=False).process()
-scints = Scintillators_Processing([twohour_top_scint_fp, twohour_mid_scint_fp, twohour_bot_scint_fp], scint_df)
+# scint_df = Datalogger_Processing(twohour_datalogger_fp, show_plots=False).process()
+# scints = Scintillators_Processing([twohour_top_scint_fp, twohour_mid_scint_fp, twohour_bot_scint_fp], scint_df)
 
-for i in range(1, len(scints.fps) + 1):
-    df   = getattr(scints, f'scint_{i}')
-    wall = df['Time[s]'].iloc[-1] - df['Time[s]'].iloc[0] # total time, not corrected for deadtime
-    live = scints.apply_deadtime_correction(i).sum() # total time, corrected for deadtime
-    print(f"scint{i}: {len(df):6d} events | wall {wall:7.1f}s ({wall/3600:.2f}h) | "
-          f"live {live:7.1f}s | raw {len(df)/wall:.3f} Hz | corrected {len(df)/live:.3f} Hz")
+# for i in range(1, len(scints.fps) + 1):
+#     df   = getattr(scints, f'scint_{i}')
+#     wall = df['Time[s]'].iloc[-1] - df['Time[s]'].iloc[0] # total time, not corrected for deadtime
+#     live = scints.apply_deadtime_correction(i).sum() # total time, corrected for deadtime
+#     print(f"scint{i}: {len(df):6d} events | wall {wall:7.1f}s ({wall/3600:.2f}h) | "
+#           f"live {live:7.1f}s | raw {len(df)/wall:.3f} Hz | corrected {len(df)/live:.3f} Hz")
 
-BREAK
+
 
 # ============================ 14 hour room temp: CALIBRATION RUN =============================
 roomtemp_datalogger_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/05292026/DataLogger/AHD002_roomtemp?.csv' # @param {type:"string"}
@@ -45,11 +45,11 @@ roomtemp_mid_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/052920
 roomtemp_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/05292026/SDright/SDright_AxLab_M_024_roomtemp.txt' # @param {type:"string"}
 
 # Processing pipeline for ground data where you need to fit the Moyal distribution and determine the MPVs
-# Datalogger_Processing --> Scintillators_Processing --> CW_Analysis, then use the method rate_spectra_with_moyal for Moyal fitting;
+# Datalogger_Processing --> Scintillators_Processing --> Detector_Analysis, then use the method rate_spectra_with_moyal for Moyal fitting;
         # must be used as a guess and check method, so you run once with random x-axis ranges for fitting, and then look at where they fall on the plot and adjust to the MIP bump
 roomtemp_df = Datalogger_Processing(roomtemp_datalogger_fp, show_plots=False).process()
 three_scintillator_roomtemp = Scintillators_Processing([roomtemp_top_scint_fp, roomtemp_mid_scint_fp, roomtemp_bot_scint_fp], roomtemp_df)
-analysis_roomtemp = CW_Analysis(three_scintillator_roomtemp, roomtemp_df)
+analysis_roomtemp = Detector_Analysis(three_scintillator_roomtemp, roomtemp_df)
 analysis_roomtemp.rate_spectra_with_moyal(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])
 
 
@@ -61,10 +61,10 @@ cs137_mid_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/mi
 cs137_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/Cs 137/right/rightAxLab_M_029.txt'
 
 # Processing pipeline for any analysis data where you DON'T need to fit the Moyal distribution -- you ALREADY DID MOYAL FIT WITH OTHER RUNS OF THE SAME SCINTILLATORS, AND NEED TO APPLY RESULTS OF THOSE CALIBRATIONS CONSTANTS TO GROUND DATA
-# Datalogger_Processing --> Scintillators_Processing --> CW_Analysis again, only difference is that you now run rate_spectra_with_fixed_MPVs() and give it the MPVs output from the calibation run you're using 
+# Datalogger_Processing --> Scintillators_Processing --> Detector_Analysis again, only difference is that you now run rate_spectra_with_fixed_MPVs() and give it the MPVs output from the calibation run you're using 
 cs_df = Datalogger_Processing(cs137_datalogger_fp).process()
 three_scintillator_cs = Scintillators_Processing([cs137_top_scint_fp, cs137_mid_scint_fp, cs137_bot_scint_fp], cs_df)
-analysis_cs = CW_Analysis(three_scintillator_cs, cs_df)
+analysis_cs = Detector_Analysis(three_scintillator_cs, cs_df)
 analysis_cs.rate_spectra_with_fixed_MPVs(MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040])
 
 plot_density_heatmap_ampcal(analysis_cs, normalize_by_livetime=True)
@@ -80,7 +80,7 @@ cs137background_bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data
 cs_df = Datalogger_Processing(cs137background_datalogger_fp).process()
 
 three_scintillator_cs = Scintillators_Processing([cs137background_top_scint_fp, cs137background_mid_scint_fp, cs137background_bot_scint_fp], cs_df)
-analysis_cs = CW_Analysis(three_scintillator_cs, cs_df)
+analysis_cs = Detector_Analysis(three_scintillator_cs, cs_df)
 analysis_cs.rate_spectra_with_fixed_MPVs(MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040])
 
 plot_density_heatmap_ampcal(analysis_cs, normalize_by_livetime=True)
@@ -120,7 +120,7 @@ for sec in sections_fridge:
     print(f"\n=== {sec['label']} ===")
     df        = Datalogger_Processing(sec['datalogger'], show_plots=False).process()
     processor = Scintillators_Processing(sec['scints'], df)
-    analysis  = CW_Analysis(processor, df)
+    analysis  = Detector_Analysis(processor, df)
     analysis.rate_spectra_with_moyal(moyal_fit_ranges=section_fit_ranges[sec['label']])
     fridge_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
 
@@ -157,7 +157,7 @@ for sec in sections_freezer:                 # ← was `sections` (the fridge on
     print(f"\n=== {sec['label']} ===")
     df        = Datalogger_Processing(sec['datalogger'], show_plots=False).process()
     processor = Scintillators_Processing(sec['scints'], df)
-    analysis  = CW_Analysis(processor, df)
+    analysis  = Detector_Analysis(processor, df)
     analysis.rate_spectra_with_moyal(moyal_fit_ranges=section_fit_ranges[sec['label']])
     freezer_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
 
@@ -191,7 +191,7 @@ for sec in sections_roomtemp:
     print(f"\n=== {sec['label']} ===")
     df        = Datalogger_Processing(sec['datalogger'], show_plots=False).process()
     processor = Scintillators_Processing(sec['scints'], df)
-    analysis  = CW_Analysis(processor, df)
+    analysis  = Detector_Analysis(processor, df)
     analysis.rate_spectra_with_moyal(moyal_fit_ranges=section_fit_ranges[sec['label']])
     roomtemp_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
 
@@ -256,10 +256,10 @@ for sec in sections_roomtemp:
 #                           pooled=False, verbose=True):
 #     """
 #     Build per-time-bin (T, global-mean MPV) points from one processed
-#     CW_Analysis run.
+#     Detector_Analysis run.
 
 #     Args:
-#         analysis  : a CW_Analysis instance that has already run
+#         analysis  : a Detector_Analysis instance that has already run
 #                     rate_spectra_with_moyal (so master_df + moyal_fit_ranges exist)
 #         bin_hours : width of each time bin in hours
 #         nb        : histogram bins per scint-fit

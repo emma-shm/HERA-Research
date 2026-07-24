@@ -386,7 +386,7 @@ class Scintillators_Processing:
 
 
 
-class CW_Analysis:
+class Detector_Analysis:
     def __init__(self, processor, datalogger_df, debug=True):
         '''
         Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run.
@@ -1405,7 +1405,7 @@ def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetim
         x = mean across scints  (SiPM_scints_avg_MIP_ampcal)
         y = std  across scints  (SiPM_scints_std_MIP_ampcal)
 
-    Mirrors CW_Analysis.plot_density_heatmaps but on the ampcal columns.
+    Mirrors Detector_Analysis.plot_density_heatmaps but on the ampcal columns.
 
     col : str, suffix of the columns to use (e.g. 'MIP_ampcal' or 'MIP_Tcal'), defaults to 'MIP_ampcal';
     normalize_by_livetime : if True, z = sum(1/livetime) -> rate [s^-1]
@@ -1585,7 +1585,7 @@ def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
 #     dl_processor = Datalogger_Processing(datalogger, show_plots=Show_plots, debug=Debug).process()
 
 #     scintillators_processor = Scintillators_Processing(scintillators, dl_processor, show_plots=Show_plots, debug=Debug)
-#     analysis = CW_Analysis(scintillators_processor, dl_processor, debug=Debug)
+#     analysis = Detector_Analysis(scintillators_processor, dl_processor, debug=Debug)
     
 #     if Moyal_fit_ranges is not None:
 #         analysis.rate_spectra_with_moyal(moyal_fit_ranges=Moyal_fit_ranges)
