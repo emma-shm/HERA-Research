@@ -393,30 +393,30 @@ class Detector_Analysis:
         This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs, and has the following methods:
 
             Two top-level pipelines (call one of these directly; each runs the full analysis/plotting chain):
-                - rate_spectra_with_moyal(moyal_fit_ranges): fits a Moyal distribution per scintillator to extract the MPV, then runs the full chain using those fitted MPVs
-                - rate_spectra_with_fixed_MPVs(MPVs, noise_threshold, mip_window): same chain, but uses externally supplied per-scint MPVs (e.g. from a prior ground/temperature calibration) instead of fitting; no Moyal fit is performed, so the dashed fit curve is absent from every panel
+                - calibrate_and_analyze_grounddata(moyal_fit_ranges): fits a Moyal distribution per scintillator to extract the MPV, then runs the full chain using those fitted MPVs
+                - analyze_calibrated_data_with_fixed_MPVs(MPVs, noise_threshold, mip_window): same chain, but uses externally supplied per-scint MPVs (e.g. from a prior ground/temperature calibration) instead of fitting; no Moyal fit is performed, so the dashed fit curve is absent from every panel
 
             Methods blocks called by the pipelines above:
                 - build_master_df(tolerance, MPVs): builds a master dataframe anchored on the datalogger timeline, merging each scintillator onto it independently by nearest-neighbour timestamp. Adds MIP-normalized, amplitude-calibrated, and cross-scintillator mean/std columns; also computes and stores the calibration constants (global_mean_mpv, amp_shifts) that the plotting methods read back
                 - fit_moyal(centers, rates, fit_x_min, fit_x_max, fit_x_n): fits a Moyal distribution to a single rate spectrum, returning the fit curve, a legend label, and the (MPV, eta, A) parameters (or None on failure)
                 - fill_between_steps(x, y1, y2, h_align, ax, lw, **kwargs): draws a fill band as horizontal step segments matching the histogram bin structure, rather than a smooth interpolation
-                - plot_all_scints_with_error(moyal_fit_ranges): per-scint rate spectra (all / non-coincident / coincident events) with Poisson uncertainty bands, plus a lower ratio panel showing each population's fraction of all events
-                - compute_and_normalize(moyal_fit_ranges, noise_threshold, MPVs, no_fit): coincident rate spectra (top row) and their MIP-normalized versions (bottom row, x-axis rescaled mV → MIP by each scint's MPV); stores per-scint fit/histogram results in self.stored for later methods to reuse
-                - plot_calibration_comparison(moyal_fit_ranges, noise_threshold): 3-row figure (raw MIP-normalized → + amplitude calibration → + amplitude and rate calibration) used to diagnose whether cross-scint detector differences are additive (overlay everywhere after the shift) or multiplicative (agree at 1 MIP but fan out off-peak)
-                - plot_density_heatmaps(): 2D density heatmap of cross-scint spread (std) vs. mean amplitude for top-fold coincidence events, MIP-normalized and rate-normalized by livetime
-                - plot_calibration_std_heatmaps(mip_window): side-by-side spread-vs-mean heatmaps, uncalibrated vs amplitude-calibrated, zoomed to the MIP peak region to show whether the calibration tightens the cross-scint spread
+                - plot_rate_spectra_preview(moyal_fit_ranges): per-scint rate spectra (all / non-coincident / coincident events) with Poisson uncertainty bands, plus a lower ratio panel showing each population's fraction of all events
+                - fit_and_normalize_spectra(moyal_fit_ranges, noise_threshold, MPVs, no_fit): coincident rate spectra (top row) and their MIP-normalized versions (bottom row, x-axis rescaled mV → MIP by each scint's MPV); stores per-scint fit/histogram results in self.scintillator_moyal_fit_results for later methods to reuse
+                - calibration_comparison(moyal_fit_ranges, noise_threshold): 3-row figure (raw MIP-normalized → + amplitude calibration → + amplitude and rate calibration) used to diagnose whether cross-scint detector differences are additive (overlay everywhere after the shift) or multiplicative (agree at 1 MIP but fan out off-peak)
+                - two_dimensional_histograms(): 2D density heatmap of cross-scint spread (std) vs. mean amplitude for top-fold coincidence events, MIP-normalized and rate-normalized by livetime
+                - MIPregion_two_dimensional_histograms(mip_window): side-by-side spread-vs-mean heatmaps, uncalibrated vs amplitude-calibrated, zoomed to the MIP peak region to show whether the calibration tightens the cross-scint spread
 
             Key attributes created (in the order the methods run):
                 - self.coinc_tag, self.coinc_col : top-fold coincidence names built from the scint count (e.g. 'CW123', 'delta_CW123'); set in __init__
-                - self.stored          : list of per-scint dicts (rate, bin edges/centers, Moyal fit, popt with MPV = popt[0]); set in compute_and_normalize
-                - self.noise_threshold : MIP threshold separating noise from signal; set in compute_and_normalize
+                - self.scintillator_moyal_fit_results          : list of per-scint dicts (rate, bin edges/centers, Moyal fit, popt with MPV = popt[0]); set in fit_and_normalize_spectra
+                - self.noise_threshold : MIP threshold separating noise from signal; set in fit_and_normalize_spectra
                 - self.master_df       : master dataframe on the datalogger timeline, with all normalized/calibrated/cross-scint columns; set in build_master_df
                 - self.mpv_per_scint, self.global_mean_mpv, self.amp_shifts : per-scint MPVs, their mean, and the per-scint mV shifts used for amplitude calibration; set in build_master_df
         '''
         self.processor = processor
         self.datalogger_df = datalogger_df
         self.moyal_fit_ranges = None
-        self.stored = None
+        self.scintillator_moyal_fit_results = None
         # NEW: build the coincidence column/tag from the number of scintillators
         n = len(processor.fps)
         self.coinc_tag = 'CW' + ''.join(str(i) for i in range(1, n + 1))  # 'CW123', 'CW1234', ...
@@ -424,12 +424,47 @@ class Detector_Analysis:
 
         self.debug = debug
 
+    def calibrate_and_analyze_grounddata(self, moyal_fit_ranges=None):
+        """
+        Fit a Moyal distribution per scintillator to determine and extract the MPV, then run the full pipeline using those fitted MPVS.
+        """
+        if moyal_fit_ranges is not None:
+            self.moyal_fit_ranges = moyal_fit_ranges
+        if self.moyal_fit_ranges is None:
+            raise ValueError("moyal_fit_ranges not set — pass it to this method or set self.moyal_fit_ranges first.")
+
+        self.plot_rate_spectra_preview(self.moyal_fit_ranges)
+        self._run_pipeline()
+
+    def analyze_calibrated_data_with_fixed_MPVs(self, MPVs, noise_threshold=0.1, mip_window=(0.8, 1.2)):
+        """
+        Same full plotting pipeline as calibrate_and_analyze_grounddata, but using externally
+        supplied per-scint MPVs (e.g. from a prior ground/temperature calibration)
+        instead of fitting a Moyal per run. No fit is performed → the dashed Moyal
+        curve is absent from every panel; everything else (rate spectra, MIP rescaling,
+        amp + rate calibration, density + std heatmaps) is produced identically.
+
+        MPVs       : list of per-scint MPVs in mV, ordered scint1..scintN
+        mip_window : (lo, hi) MIP zoom window for the std heatmaps, replacing the
+                    fit-range auto-zoom (which needs a fit to derive).
+        """
+        self.noise_threshold = noise_threshold
+        self.plot_rate_spectra_preview()
+        self._run_pipeline(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window)
+
+    def _run_pipeline(self, MPVs=None, noise_threshold=0.1, mip_window=None):
+        self.fit_and_normalize_spectra(MPVs=MPVs, noise_threshold=noise_threshold, no_fit=(MPVs is not None))
+        self.build_master_df(MPVs=MPVs)
+        self.calibration_comparison()
+        self.two_dimensional_histograms()
+        self.MIPregion_two_dimensional_histograms(mip_window=mip_window)
+
     def build_master_df(self, tolerance=0.5, MPVs=None):
         '''
         Build a master dataframe anchored on the datalogger timeline.
         Each scintillator is merged independently (no scint-to-scint chaining).
         MIP-normalized columns are added using the per-scintillator MPVs read
-        from self.stored (the Moyal fits produced by compute_and_normalize).
+        from self.scintillator_moyal_fit_results (the Moyal fits produced by fit_and_normalize_spectra).
         Global-mean amplitude-calibrated columns are also added for the top fold.
 
         Inputs (read from self, no arguments):
@@ -445,7 +480,7 @@ class Detector_Analysis:
         Parameters
         ----------
         tolerance : float
-            merge_asof tolerance in seconds (default 0.1).
+            merge_asof tolerance in seconds (default 0.5).
         '''
 
         # Sort the datalogger by the absolute timer and reset the index for merging
@@ -481,10 +516,8 @@ class Detector_Analysis:
                     master[f'SiPM_scint{i}[mV]'].where(master[f'delta_{tag}'] > 0))
 
         # Creating dictionary of MPVs per scintillator
-        if MPVs is None:
-            mpv_per_scint = {i: self.stored[i - 1]['popt'][0] for i in range(1, len(self.processor.fps) + 1)} # stored is list of dicts, one dict per scintillator,                                                                                                 # which contains the moyal fit parameters for that scint
-        else:
-            mpv_per_scint = {i: MPVs[i-1] for i in range(1, len(self.processor.fps)+1)}
+        mpv_per_scint = {i: self._resolve_mpv(i, MPVs) for i in range(1, len(self.processor.fps) + 1)} # dictionary of MPVs per scintillator found using the _resolve_mpv helper function
+
 
         # ── MIP-normalized per-channel columns ──────────────────────────
         for i in range(1, len(self.processor.fps) + 1):
@@ -508,9 +541,8 @@ class Detector_Analysis:
                 master[f'SiPM_mV_{top}_scint{i}'] - master[f'SiPM_mV_{top}_scint{i+1}'])
 
         # ── Global-mean amplitude calibration (top fold) ─────────────────
-        global_mean_mpv = np.mean(list(mpv_per_scint.values()))
-        self.global_mean_mpv = global_mean_mpv                                                      # store for calibrate_normalized_CW_spectra to read (single source)
-        self.amp_shifts = [global_mean_mpv - mpv_per_scint[i] for i in range(1, len(self.processor.fps) + 1)]  # 0-based list, scint 1 at index 0
+        self.global_mean_mpv, self.amp_shifts = self._compute_calibration(mpv_per_scint)
+        global_mean_mpv = self.global_mean_mpv
 
         for i in range(1, len(self.processor.fps) + 1):
             amp_shift = global_mean_mpv - mpv_per_scint[i] # finding offset of each individual scintillator's MPV from global mean
@@ -539,43 +571,6 @@ class Detector_Analysis:
             "livetime_s_per_scint": [getattr(self.processor, f"total_livetime_scint{i}_s", None)
                                      for i in range(1, n + 1)],
         }, "calibration_summary")
-
-
-    def rate_spectra_with_moyal(self, moyal_fit_ranges=None):
-        if moyal_fit_ranges is not None:
-            self.moyal_fit_ranges = moyal_fit_ranges
-        if self.moyal_fit_ranges is None:
-            raise ValueError("moyal_fit_ranges not set — pass it to this method or set self.moyal_fit_ranges first.")
-
-        self.plot_all_scints_with_error(self.moyal_fit_ranges)
-        self.compute_and_normalize()   # no MPVs → uses fitted popt[0]
-        self.build_master_df()         # no MPVs → uses fitted popt[0]
-        self.plot_calibration_comparison()
-        self.plot_density_heatmaps()
-        self.plot_calibration_std_heatmaps()
-
-
-    def rate_spectra_with_fixed_MPVs(self, MPVs, noise_threshold=0.1, mip_window=(0.8, 1.2)):
-        """
-        Same full plotting pipeline as rate_spectra_with_moyal, but using externally
-        supplied per-scint MPVs (e.g. from a prior ground/temperature calibration)
-        instead of fitting a Moyal per run. No fit is performed → the dashed Moyal
-        curve is absent from every panel; everything else (rate spectra, MIP rescaling,
-        amp + rate calibration, density + std heatmaps) is produced identically.
-
-        MPVs       : list of per-scint MPVs in mV, ordered scint1..scintN
-        mip_window : (lo, hi) MIP zoom window for the std heatmaps, replacing the
-                    fit-range auto-zoom (which needs a fit to derive).
-        """
-        self.noise_threshold = noise_threshold
-        self.plot_all_scints_with_error()                                       # no ranges → fit skipped, rate spectra only
-        self.compute_and_normalize(MPVs=MPVs, noise_threshold=noise_threshold, no_fit=True)
-        self.build_master_df(MPVs=MPVs)
-        self.plot_calibration_comparison()
-        self.plot_density_heatmaps()
-        self.plot_calibration_std_heatmaps(mip_window=mip_window)
-
-
 
     # ── Moyal fit function ──────────────────────────────────────────────────
     def fit_moyal(self, centers, rates, fit_x_min=40, fit_x_max=120, fit_x_n=300):
@@ -632,210 +627,78 @@ class Detector_Analysis:
             )
 
             return None, None, None, None
-
-
-    # ------------ ALL SCINTS: Plotting All events, No coincidence events, and coincidence events WITH error ------------
-    def fill_between_steps(self, x, y1, y2=0, h_align='mid', ax=None, lw=2, **kwargs):
-        if ax is None:
-            ax = plt.gca()
-        xx = np.ravel(np.column_stack((x, x)))[1:]
-        xstep = np.ravel(np.column_stack((x[1:] - x[:-1], x[1:] - x[:-1])))
-        xstep = np.concatenate(([xstep[0]], xstep, [xstep[-1]]))
-        xx = np.append(xx, xx.max() + xstep[-1])
-        if h_align == 'mid':
-            xx -= xstep / 2.
-        elif h_align == 'right':
-            xx -= xstep
-        y1 = np.ravel(np.column_stack((y1, y1)))
-        if isinstance(y2, np.ndarray):
-            y2 = np.ravel(np.column_stack((y2, y2)))
-        ax.fill_between(xx, y1, y2=y2, lw=lw, **kwargs)
-        return ax
-
-
-    def plot_all_scints_with_error(self, moyal_fit_ranges=None):
-        # ── Resolve fit ranges ───────────────────────────────────────────────
-        # If the user passed a new set of fit ranges, update the class attribute so
-        # subsequent methods (e.g. compute_and_normalize) reuse the same ranges.
-        # If nothing is passed and nothing is set, ranges stay None → the Moyal fit
-        # is skipped below and the rate spectra are drawn without a dashed curve.
-        if moyal_fit_ranges is not None:
-            self.moyal_fit_ranges = moyal_fit_ranges
-        moyal_fit_ranges = self.moyal_fit_ranges   # may be None → fit skipped per-scint below
-
-        # Number of scintillators = number of subplot columns
-        x = len(self.processor.fps)
-
-        # ── Figure layout: 2 rows × N columns ────────────────────────────────
-        # Row 0 = rate spectra with Poisson uncertainty bands (tall, height ratio 3)
-        # Row 1 = ratio panel showing each spectrum / all_events (short, height ratio 1)
-        # sharex='col' ties each column's two panels to the same x-axis so the ratio plot lines up visually under the spectrum plot.
-        fig, axes = plt.subplots(2, x, figsize=(6 * x, 6), sharex='col', gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1}, squeeze=False)
-
-        # Loop over each scintillator, pulling the top-row and bottom-row axes together
-        for scint_idx, (ax, ax2) in enumerate(zip(axes[0], axes[1]), start=1):
-
-            # Aligned dataframe produced by Scintillators_Processing for this scintillator
-            df = getattr(self.processor, f'aligned_scint{scint_idx}')
-
-            # Column holding the SiPM peak voltage (in mV) for this scintillator
-            col = f'SiPM_scint{scint_idx}[mV]'
-
-            # ── Define coincidence mask ──────────────────────────────────────
-            # delta_CW123 > 0 means "this row corresponds to a triple-coincidence event".
-            # Computed once and reused to split events into coincident / non-coincident.
-            coinc_mask = df[self.coinc_col] > 0
-
-            # Mask of rows belonging to ANY coincidence order (double, triple, ...).
-            # coinc_orders = [2, 3] for N=3 → ['delta_CW12', 'delta_CW123'].
-            coinc_order_cols = [f'delta_{self.processor._coinc_tag(k)}' for k in self.processor.coinc_orders]
-            any_coinc_mask = (df[coinc_order_cols] > 0).any(axis=1)
-
-
-            # ── Split events into three populations ──────────────────────────
-            # all_events       = every recorded event in this scintillator
-            # coinc_events     = events tagged as triple-coincident
-            # no_coinc_events  = everything that is NOT triple-coincident
-            # .dropna() removes rows where the SiPM column is NaN.
-            all_events = df[col].dropna()
-            coinc_events = df.loc[coinc_mask, col].dropna()
-            no_coinc_events = df.loc[~any_coinc_mask, col].dropna()
-
-            old = (~(df[self.coinc_col] > 0)).sum()
-            new = (~any_coinc_mask).sum()
-            print(f"non-coinc events: old={old}, new={new}, removed by adding doubles={old-new}")
-
-
-            # ── Build log-spaced histogram bins ──────────────────────────────
-            # Using log-spaced bins because SiPM amplitudes span several orders of magnitude.
-            # Bin edges are computed over the union of all three populations so that the
-            # three spectra use IDENTICAL bins (otherwise they couldn't be compared bin-to-bin).
-            NUM_BINS = 50
-
-            all_sipm = np.concatenate((all_events.values, coinc_events.values, no_coinc_events.values))
-            # Drop non-finite values and non-positive entries (log10 requires > 0).
-            all_sipm = all_sipm[np.isfinite(all_sipm) & (all_sipm > 0)]
-
-            # 51 edges → 50 bins. Lower edge is clamped at 0.1 mV to avoid log10(0).
-            bin_edges = np.logspace(
-                np.log10(max(all_sipm.min(), 0.1)),
-                np.log10(all_sipm.max()),
-                NUM_BINS + 1
-            )
-
-            # ── Histogram each population into the shared bin_edges ──────────
-            # np.histogram returns (counts, edges); we keep only counts
-            # counts_X is a length-50 (bc 50 bins) array where counts_X[j] is the number of
-            # events from population X that fell into a bin number j
-            counts_all, _ = np.histogram(all_events, bins=bin_edges)
-            counts_coinc, _ = np.histogram(coinc_events, bins=bin_edges)
-            counts_no_coinc, _ = np.histogram(no_coinc_events, bins=bin_edges)
-
-            # Per-scintillator livetime (deadtime-corrected) produced by Scintillators_Processing.
-            # Each scintillator gets its OWN livetime — they can't share one.
-            total_livetime_s = getattr(self.processor, f'total_livetime_scint{scint_idx}_s')
-
-            # ── Convert counts → rate ────────────────────────────────────────
-            # rate [events/s per bin] = counts / livetime.
-            # Dividing by livetime makes the y-axis independent of how long the run was,
-            # so spectra from different runs can be compared on equal footing.
-            rate_all = counts_all / total_livetime_s
-            rate_coinc = counts_coinc / total_livetime_s
-            rate_no_coinc = counts_no_coinc / total_livetime_s
-
-            # ── Poisson uncertainty on the rate ──────────────────────────────
-            # If you count N events in a bin, the statistical uncertainty is σ_N = √N (Poisson rule).
-            # Since rate = N / T and T is a constant, the uncertainty divides the same way:
-            #     σ_rate = √N / T
-            err_all = np.sqrt(counts_all) / total_livetime_s
-            err_coinc = np.sqrt(counts_coinc) / total_livetime_s
-            err_no_coinc = np.sqrt(counts_no_coinc) / total_livetime_s
-
-            # Geometric-mean bin centers (correct choice for log-spaced bins,
-            # rather than the arithmetic mean which would bias toward the upper edge).
-            bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])
-
-            # ── Moyal fit on the coincident spectrum ─────────────────────────
-            # Only the coincident events get a Moyal fit here — they form a clean MIP peak.
-            # FIT_X_MIN / FIT_X_MAX restrict the fit window to the peak region (per-scint).
-            # With no fit ranges set (fixed-MPV path), the fit is skipped and all fit
-            # outputs are None so the overlay below is suppressed.
-            if moyal_fit_ranges is not None:
-                FIT_X_MIN, FIT_X_MAX = moyal_fit_ranges[scint_idx - 1]
-                fit_x_coinc, moyal_y_coinc, label_coinc, popt_coinc = self.fit_moyal(bin_centers, rate_coinc, FIT_X_MIN, FIT_X_MAX)
-            else:
-                fit_x_coinc = moyal_y_coinc = label_coinc = popt_coinc = None
-
-            # ── Upper panel: rate spectra with error bands ───────────────────
-            # Plot rate ± σ_rate as a shaded band for each population.
-            # fill_between_steps draws the band as horizontal step segments (matching
-            # the histogram bin structure) rather than a smooth interpolation.
-            colors_list = ['teal', 'darkorange', 'steelblue']
-            labels_list = ['All Events', 'Non-Coincident', 'Coincident']
-
-            for rate, err, c, lbl in zip(
-                [rate_all, rate_no_coinc, rate_coinc],
-                [err_all, err_no_coinc, err_coinc],
-                colors_list, labels_list
-            ):
-                # Draw the ±σ uncertainty band on the upper panel.
-                self.fill_between_steps(bin_centers, rate + err, rate - err, color=c, alpha=0.5, ax=ax)
-                ax.stairs(rate, bin_edges, color=c, linewidth=1.5)
-                # Off-screen dummy line so the legend shows a solid line entry
-                # (fill_between alone doesn't produce a clean legend handle).
-                ax.plot([1e14], [1e14], color=c, linewidth=2, label=lbl)
-
-            # Overlay the Moyal fit if it converged.
-            if moyal_y_coinc is not None:
-                ax.plot(fit_x_coinc, moyal_y_coinc, 'k--', linewidth=2, label=label_coinc)
-
-            # Log–log axes for the rate spectrum.
-            ax.set_xscale('log'); ax.set_yscale('log')
-            ax.set_xlim(bin_edges[0], bin_edges[-1])
-            # Leave headroom above the maximum rate so the legend doesn't overlap data.
-            ax.set_ylim(1e-5, rate_all.max() * 5)
-            ax.set_title(f'Scintillator {scint_idx}', fontsize=13)
-            ax.grid(True, which='both', linestyle='--', alpha=0.4)
-            ax.legend(fontsize=10)
-
-            # ── Lower panel: ratio of each spectrum to all_events ────────────
-            # For each (rate, err) pair, plot (rate ± err) / rate_all as a band.
-            # This shows what FRACTION of all events in each bin is coincident vs non-coincident,
-            # with the uncertainty band propagated from the numerator only (denominator treated as exact).
-            #
-            # np.divide(..., out=zeros, where=rate_all != 0) safely handles bins where
-            # rate_all is zero (which would otherwise raise a divide-by-zero warning and
-            # produce inf/NaN). In those bins the ratio is set to 0 instead.
-            for rate, err, c in zip(
-                [rate_no_coinc, rate_coinc],
-                [err_no_coinc, err_coinc],
-                ['darkorange', 'steelblue']
-            ):
-                upper = np.divide(rate + err, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
-                lower = np.divide(rate - err, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
-                ax.stairs(rate, bin_edges, color=c, linewidth=1.5)
-                self.fill_between_steps(bin_centers, upper, lower, color=c, alpha=0.7, ax=ax2)
-
-            # Reference line at ratio = 1 (i.e. that population = all events in that bin).
-            ax2.axhline(1.0, color='black', linestyle='--', linewidth=1)
-            ax2.set_xlabel('SiPM Peak Voltage [mV]', fontsize=12)
-            # Ratios are bounded between 0 and 1 by construction (each subset ⊆ all_events).
-            ax2.set_ylim(0, 1.1)
-            ax2.grid(True, which='both', linestyle='--', alpha=0.4)
-
-        # Shared y-axis labels (only on the leftmost column to avoid clutter).
-        axes[0][0].set_ylabel(r'Rate/bin [s$^{-1}$]', fontsize=12)
-        axes[1][0].set_ylabel('Ratio', fontsize=12)
-        plt.suptitle(r'Rate Spectra with Poisson Uncertainty Bands ($\sigma_i = \sqrt{N_i}\,/\,T_{\mathrm{live}}$)', fontsize=14)
-        plt.tight_layout()
-        finish_mpl(fig, "rate_spectra")
-
+    
+    def _resolve_mpv(self, scint_idx, MPVs=None):
+        '''
+        Resolve the MPV for an individual scintillators, which are either passed in as an argument or generated in the script
+        '''
+        # Use the list of MPVs if provided (which should be provided in the build_master_df and fit_and_normalize_spectra methods if the user has indicated that they want to use externally supplied MPVs instead of fitting a Moyal distribution to the data)
+        if MPVs is not None:
+            return MPVs[scint_idx - 1]
+        return self.scintillator_moyal_fit_results[scint_idx - 1]['popt'][0]
+    
+    def _compute_calibration(self, mpv_per_scint):
+        '''
+        Helper method for computing the calibration constant (global mean MPV for a stack of scintillators) using the individual MPVs per scintillator
+        stored in the class (either as an arugment loaded in from a previous ground run)
+        '''
+        global_mean_mpv = np.mean(list(mpv_per_scint.values()))
+        amp_shifts = [global_mean_mpv - mpv_per_scint[i] for i in range(1, len(mpv_per_scint) + 1)]
+        return global_mean_mpv, amp_shifts
+    
+    def _mean_livetime(self):
+        n = len(self.processor.fps)
+        return float(np.mean([getattr(self.processor, f'total_livetime_scint{i}_s') for i in range(1, n + 1)]))
 
     # ── Raw spectra + MIP-normalized, combined ───────────────────────────────
-    def compute_and_normalize(self, moyal_fit_ranges=None, noise_threshold=0.1, MPVs=None, no_fit=False):
+    def fit_and_normalize_spectra(self, moyal_fit_ranges=None, noise_threshold=0.1, MPVs=None, no_fit=False):
+        '''
+        Build the per-scintillator coincident rate spectra and their MIP-normalized
+        versions, and cache the fit/histogram results other methods read back.
 
-        # In fit mode, fit ranges are required. In no_fit mode they're irrelevant
-        # (supplied MPVs stand in for the fitted peak), so the check is skipped.
+        Produces a 2-row × N-scint figure:
+            Row 0: coincident rate spectrum per scint [s^-1 per bin] vs SiPM mV,
+                with a Poisson error band and (unless no_fit) a dashed Moyal
+                fit overlay.
+            Row 1: same spectra rescaled onto a MIP x-axis (mV ÷ MPV), split into
+                above/below noise_threshold, with a vertical line at 1 MIP.
+
+        Two ways to get a MPV per scintillator, determined by the no_fit argument:
+            - Fit a Moyal to each scint's spectrum via fit_moyal(), which is the default (no_fit=False).
+                Uses moyal_fit_ranges[i] as the (min, max) mV window.
+                moyal_fit_ranges must be supplied here or already set on self.
+            - Use given MPVs (no_fit=True), which means skipping the fit entirely and uses MPVs[i] directly.
+
+        Args:
+            moyal_fit_ranges: list of (fit_x_min, fit_x_max) per scint, in mV.
+                Ignored if no_fit=True. If None and no_fit=False, falls back to
+                self.moyal_fit_ranges (raises if that's also unset).
+            noise_threshold: MIP value separating "noise" from "signal" on the
+                row-1 plots; also cached to self.noise_threshold for later use
+                by the heatmap methods.
+            MPVs: list of per-scint MPVs in mV, ordered scint1..scintN. Required
+                if no_fit=True; ignored otherwise.
+            no_fit: if True, use MPVs instead of fitting (see above).
+
+        Side effects:
+            self.scintillator_moyal_fit_results          : list of per-scint dicts (rate, err, bin_edges,
+                                    bin_centers, fit_x, moyal_y, peak_rate, popt),
+                                    one entry per scintillator. popt = [mpv] when
+                                    no_fit=True, or (mpv, eta, A) from the fit.
+            self.noise_threshold : set from the noise_threshold argument.
+            self.moyal_fit_ranges : set from moyal_fit_ranges if provided and
+                                    no_fit=False.
+
+        Raises:
+            ValueError: if no_fit=False and no fit range is available (neither
+                passed in nor previously set on self).
+
+        Note:
+            Downstream methods (build_master_df, calibration_comparison,
+            two_dimensional_histograms, MIPregion_two_dimensional_histograms) all read
+            self.scintillator_moyal_fit_results, so this must run before any of them — _run_pipeline()
+            already enforces that ordering.
+        '''
         if not no_fit:
             if moyal_fit_ranges is not None:
                 self.moyal_fit_ranges = moyal_fit_ranges
@@ -854,7 +717,6 @@ class Detector_Analysis:
 
 
         for scint_idx, ax in enumerate(axes_top, start=1):
-            # ← these two lines are the only real changes
             df_scint = getattr(self.processor, f'aligned_scint{scint_idx}')
             livetime = getattr(self.processor, f'total_livetime_scint{scint_idx}_s')
 
@@ -895,7 +757,7 @@ class Detector_Analysis:
 
         axes_top[0].set_ylabel(r'Rate/bin [s$^{-1}$]', fontsize=12)
 
-        self.stored = stored
+        self.scintillator_moyal_fit_results = stored
 
 
         # ── Normalized to 1 MIP ─────────────────────────────────────────────────
@@ -910,10 +772,7 @@ class Detector_Analysis:
                 ax.set_title(f'Scintillator {scint_idx+1} — fit failed', fontsize=13)
                 continue
 
-            if MPVs is None:
-                mpv = s['popt'][0]
-            else:
-                mpv = MPVs[i]
+            mpv = self._resolve_mpv(scint_idx + 1, MPVs)
 
             # Rescale x-axis: mV → MIP
             bin_edges_mip   = s['bin_edges']   / mpv
@@ -954,8 +813,7 @@ class Detector_Analysis:
         plt.tight_layout()
         finish_mpl(fig, "mip_normalized")
 
-
-    def plot_calibration_comparison(self, moyal_fit_ranges=None, noise_threshold=None):
+    def calibration_comparison(self, moyal_fit_ranges=None, noise_threshold=None):
         """
         Draws the calibration-comparison figure (3 rows × N scintillators):
         Row 0: raw MIP-normalized spectra (each scint ÷ its own MPV)
@@ -977,7 +835,7 @@ class Detector_Analysis:
         None, so the dashed Moyal curve is simply absent; everything else is identical.
 
         Reads:
-            self.stored          : per-scint Moyal-fit / histogram dicts (from compute_and_normalize)
+            self.scintillator_moyal_fit_results          : per-scint Moyal-fit / histogram dicts (from fit_and_normalize_spectra)
             self.global_mean_mpv : common MPV reference (from build_master_df)
             self.amp_shifts      : per-scint additive mV shift, 0-based (from build_master_df)
         """
@@ -987,12 +845,12 @@ class Detector_Analysis:
         if noise_threshold is None:
             noise_threshold = getattr(self, 'noise_threshold', 0.1)
 
-        if self.stored is None:
-            raise ValueError("self.stored is not set — run compute_and_normalize() first.")
-        stored = self.stored
+        if self.scintillator_moyal_fit_results is None:
+            raise ValueError("self.scintillator_moyal_fit_results is not set — run fit_and_normalize_spectra() first.")
+        stored = self.scintillator_moyal_fit_results
 
         # ── Calibration constants: READ from build_master_df (single source) ──────
-        # build_master_df computes global_mean_mpv + amp_shifts from self.stored and
+        # build_master_df computes global_mean_mpv + amp_shifts from self.scintillator_moyal_fit_results and
         # stores them on self. We read them here so this figure can't drift from the
         # master dataframe's calibrated columns.
         if not hasattr(self, 'amp_shifts'):
@@ -1174,7 +1032,21 @@ class Detector_Analysis:
         plt.tight_layout()
         finish_mpl(fig, "calibration_comparison")
 
-    def plot_density_heatmaps(self):
+    def two_dimensional_histograms(self):
+        '''
+        Wide-view 2D density heatmap: cross-scintillator spread (std) vs. mean amplitude, MIP-normalized, across the FULL amplitude range (no zoom).
+
+        Dataset: rows where the AVERAGE MIP amplitude across scints is above noise_threshold — i.e. "the event's mean signal cleared the noise floor,"
+        even if one individual scint's reading is low. No amplitude calibration is applied here; this is the raw (uncalibrated) MIP-normalized spread.
+
+        This is the diagnostic view for seeing the overall shape of cross-scint spread across the entire spectrum (noise floor through MIP peak and beyond) — one heatmap, uncalibrated only. Contrast with
+        MIPregion_two_dimensional_histograms(), which restricts to a narrow window around the MIP peak and compares raw vs. amplitude-calibrated side by side.
+        '''
+        if not hasattr(self, 'master_df'):
+            raise ValueError("master_df not set — run build_master_df() first.")
+        if not hasattr(self, 'noise_threshold'):
+            raise ValueError("noise_threshold not set — run fit_and_normalize_spectra() first.")
+        
         master = self.master_df
         n = len(self.processor.fps)
 
@@ -1189,14 +1061,13 @@ class Detector_Analysis:
         # Per-bin counts → per-bin rate [s⁻¹] so heatmaps are comparable across
         # runs of different duration. Coincidence events are cross-scint, so using
         # the mean deadtime-corrected livetime across scintillators
-        livetime = float(np.mean([getattr(self.processor, f'total_livetime_scint{i}_s')
-                                   for i in range(1, n + 1)]))
+        livetime = self._mean_livetime()
         print(f"[density heatmap] normalizing by livetime = {livetime:.2f} s")
 
         # ── DEBUG: overview of master + the columns each plot needs ──────
         if self.debug:
             print("=" * 70)
-            print(f"DEBUG plot_density_heatmaps | master rows: {len(master)} | min_mip={min_mip}")
+            print(f"DEBUG two_dimensional_histograms | master rows: {len(master)} | min_mip={min_mip}")
             for c in [mv_col, mip_col, "SiPM_scints_avg_MIP",
                     "SiPM_scints_std", "SiPM_scints_std_MIP"]:
                 col = master[c]
@@ -1205,6 +1076,10 @@ class Detector_Analysis:
             print("=" * 70)
 
         # ── MIP-normalized: average vs spread ───────────────────────────
+        # Filter is on the AVERAGE MIP across scints, not each scint individually —
+        # an event can pass here even if one scint's reading is below noise_threshold,
+        # as long as the mean clears it. Contrast with MIPregion_two_dimensional_histograms(),
+        # which requires EVERY scint individually >= min_mip.
         sub_avg = master[master["SiPM_scints_avg_MIP"] >= min_mip].copy() # slicing the master df to only include the rows where the average MIP amplitude across all three scints is above threshold
         sub_avg["_rate_weight"] = 1.0 / livetime
         print(f"[MIP avg]  rows with SiPM_scints_avg_MIP >= {min_mip}: {len(sub_avg)}")
@@ -1227,11 +1102,30 @@ class Detector_Analysis:
         fig_mip.update_coloraxes(colorbar_title="Normalized Counts")
         finish_plotly(fig_mip, "density_heatmap")
 
+    def MIPregion_two_dimensional_histograms(self, mip_window=None):
+        '''
+        Zoomed, side-by-side 2D density heatmaps around the MIP peak region:
+        uncalibrated (row/col 1) vs. amplitude-calibrated (row/col 2), so the
+        effect of amplitude calibration on cross-scint spread can be read off
+        directly, panel-to-panel.
 
+        Dataset is filtered more strictly than two_dimensional_histograms():
+            1. EVERY individual scint's MIP amplitude must clear noise_threshold
+            (not just the average) — a tighter, per-channel noise cut.
+            2. Rows are further restricted to a narrow MIP window (mip_window if
+            given, else auto-derived from the Moyal fit ranges) — i.e. only
+            events actually near the 1-MIP peak, not the full spectrum.
 
-    def plot_calibration_std_heatmaps(self, mip_window=None):
+        Because of that second cut, this method answers a different question
+        than two_dimensional_histograms(): not "what does spread look like
+        across the whole spectrum," but "right at the peak, does amplitude
+        calibration tighten the cross-scint spread?" — hence the raw-vs-cal
+        pair of panels instead of a single heatmap.
+        '''
         if not hasattr(self, 'master_df'):
             raise ValueError("master_df not set — run build_master_df() first.")
+        if not hasattr(self, 'noise_threshold'):
+            raise ValueError("noise_threshold not set — run fit_and_normalize_spectra() first.")
 
         master = self.master_df
         n = len(self.processor.fps)
@@ -1240,7 +1134,7 @@ class Detector_Analysis:
         coinc_label = '&'.join(str(i) for i in range(1, n + 1))
 
         # Livetime for rate normalization (mean across scints; see note above)
-        livetime = float(np.mean([getattr(self.processor, f'total_livetime_scint{i}_s') for i in range(1, n + 1)]))
+        livetime = self._mean_livetime()
         print(f"[std heatmap] normalizing by livetime = {livetime:.2f} s")
 
         avg_raw, std_raw = "SiPM_scints_avg_MIP",     "SiPM_scints_std_MIP"
@@ -1248,7 +1142,9 @@ class Detector_Analysis:
         mip_cols = [f"SiPM_MIP_{tag}_scint{i}" for i in range(1, n + 1)]
 
         # ── Shared row filter ────────────────────────────────────────────
-        master = master[(master[mip_cols] >= min_mip).all(axis=1)]
+        master = master[(master[mip_cols] >= min_mip).all(axis=1)] # Stricter than two_dimensional_histograms(): requires ALL scints individually
+                                                                    # >= min_mip, not just the average — a per-channel noise cut rather than a
+                                                                    # mean-based one, making it a more selective cut of the data
 
         # ── Zoom window: explicit if given, else auto from fit ranges ────
         # mip_window lets the fixed-MPV (no-fit) path supply the zoom directly, since
@@ -1264,12 +1160,14 @@ class Detector_Analysis:
             fit_los = [self.moyal_fit_ranges[i-1][0] / mpv_per_scint[i] for i in range(1, n+1)]
             fit_his = [self.moyal_fit_ranges[i-1][1] / mpv_per_scint[i] for i in range(1, n+1)]
             bump_lo, bump_hi = float(np.mean(fit_los)), float(np.mean(fit_his))
-        master = master[(master[avg_raw] >= bump_lo) & (master[avg_raw] <= bump_hi)]
+        master = master[(master[avg_raw] >= bump_lo) & (master[avg_raw] <= bump_hi)] # Zooms to a narrow MIP-peak window — the other method plots the full range.
+                                                                                        # This is what makes the raw-vs-amplitude-calibrated comparison meaningful:
+                                                                                        # outside this window there isn't a peak to compare calibration against.
         print(f"  rows surviving fit-window [{bump_lo:.3f}, {bump_hi:.3f}] MIP (raw mean): {len(master)}")
 
         if self.debug:
             print("=" * 70)
-            print("DEBUG plot_calibration_std_heatmaps")
+            print("DEBUG MIPregion_two_dimensional_histograms")
             print(f"  global_mean_mpv : {getattr(self, 'global_mean_mpv', 'NOT SET')}")
             print(f"  amp_shifts (mV) : {getattr(self, 'amp_shifts', 'NOT SET')}")
 
@@ -1334,6 +1232,202 @@ class Detector_Analysis:
                         f"(N={len(master)} events, all scints ≥ {min_mip} MIP)"),
         )
         finish_plotly(fig, "std_heatmap")
+
+    # ------------ ALL SCINTS: Plotting All events, No coincidence events, and coincidence events WITH error ------------
+    def fill_between_steps(self, x, y1, y2=0, h_align='mid', ax=None, lw=2, **kwargs):
+        if ax is None:
+            ax = plt.gca()
+        xx = np.ravel(np.column_stack((x, x)))[1:]
+        xstep = np.ravel(np.column_stack((x[1:] - x[:-1], x[1:] - x[:-1])))
+        xstep = np.concatenate(([xstep[0]], xstep, [xstep[-1]]))
+        xx = np.append(xx, xx.max() + xstep[-1])
+        if h_align == 'mid':
+            xx -= xstep / 2.
+        elif h_align == 'right':
+            xx -= xstep
+        y1 = np.ravel(np.column_stack((y1, y1)))
+        if isinstance(y2, np.ndarray):
+            y2 = np.ravel(np.column_stack((y2, y2)))
+        ax.fill_between(xx, y1, y2=y2, lw=lw, **kwargs)
+        return ax
+
+
+    def plot_rate_spectra_preview(self, moyal_fit_ranges=None):
+        # ── Resolve fit ranges ───────────────────────────────────────────────
+        # If the user passed a new set of fit ranges, update the class attribute so
+        # subsequent methods (e.g. fit_and_normalize_spectra) reuse the same ranges.
+        # If nothing is passed and nothing is set, ranges stay None → the Moyal fit
+        # is skipped below and the rate spectra are drawn without a dashed curve.
+        if moyal_fit_ranges is not None:
+            self.moyal_fit_ranges = moyal_fit_ranges
+        moyal_fit_ranges = self.moyal_fit_ranges   # may be None → fit skipped per-scint below
+
+        # Number of scintillators = number of subplot columns
+        x = len(self.processor.fps)
+
+        # ── Figure layout: 2 rows × N columns ────────────────────────────────
+        # Row 0 = rate spectra with Poisson uncertainty bands (tall, height ratio 3)
+        # Row 1 = ratio panel showing each spectrum / all_events (short, height ratio 1)
+        # sharex='col' ties each column's two panels to the same x-axis so the ratio plot lines up visually under the spectrum plot.
+        fig, axes = plt.subplots(2, x, figsize=(6 * x, 6), sharex='col', gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.1}, squeeze=False)
+
+        # Loop over each scintillator, pulling the top-row and bottom-row axes together
+        for scint_idx, (ax, ax2) in enumerate(zip(axes[0], axes[1]), start=1):
+
+            # Aligned dataframe produced by Scintillators_Processing for this scintillator
+            df = getattr(self.processor, f'aligned_scint{scint_idx}')
+
+            # Column holding the SiPM peak voltage (in mV) for this scintillator
+            col = f'SiPM_scint{scint_idx}[mV]'
+
+            # ── Define coincidence mask ──────────────────────────────────────
+            # delta_CW123 > 0 means "this row corresponds to a triple-coincidence event".
+            # Computed once and reused to split events into coincident / non-coincident.
+            coinc_mask = df[self.coinc_col] > 0
+
+            # Mask of rows belonging to ANY coincidence order (double, triple, ...).
+            # coinc_orders = [2, 3] for N=3 → ['delta_CW12', 'delta_CW123'].
+            coinc_order_cols = [f'delta_{self.processor._coinc_tag(k)}' for k in self.processor.coinc_orders]
+            any_coinc_mask = (df[coinc_order_cols] > 0).any(axis=1)
+
+
+            # ── Split events into three populations ──────────────────────────
+            # all_events       = every recorded event in this scintillator
+            # coinc_events     = events tagged as triple-coincident
+            # no_coinc_events  = everything that is NOT triple-coincident
+            # .dropna() removes rows where the SiPM column is NaN.
+            all_events = df[col].dropna()
+            coinc_events = df.loc[coinc_mask, col].dropna()
+            no_coinc_events = df.loc[~any_coinc_mask, col].dropna()
+
+            old = (~(df[self.coinc_col] > 0)).sum()
+            new = (~any_coinc_mask).sum()
+            print(f"non-coinc events: old={old}, new={new}, removed by adding doubles={old-new}")
+
+
+            # ── Build log-spaced histogram bins ──────────────────────────────
+            # Using log-spaced bins because SiPM amplitudes span several orders of magnitude.
+            # Bin edges are computed over the union of all three populations so that the
+            # three spectra use IDENTICAL bins (otherwise they couldn't be compared bin-to-bin).
+            NUM_BINS = 50
+
+            all_sipm = np.concatenate((all_events.values, coinc_events.values, no_coinc_events.values))
+            # Drop non-finite values and non-positive entries (log10 requires > 0).
+            all_sipm = all_sipm[np.isfinite(all_sipm) & (all_sipm > 0)]
+
+            # 51 edges → 50 bins. Lower edge is clamped at 0.1 mV to avoid log10(0).
+            bin_edges = np.logspace(
+                np.log10(max(all_sipm.min(), 0.1)),
+                np.log10(all_sipm.max()),
+                NUM_BINS + 1
+            )
+
+            # ── Histogram each population into the shared bin_edges ──────────
+            # np.histogram returns (counts, edges); we keep only counts
+            # counts_X is a length-50 (bc 50 bins) array where counts_X[j] is the number of
+            # events from population X that fell into a bin number j
+            counts_all, _ = np.histogram(all_events, bins=bin_edges)
+            counts_coinc, _ = np.histogram(coinc_events, bins=bin_edges)
+            counts_no_coinc, _ = np.histogram(no_coinc_events, bins=bin_edges)
+
+            # Per-scintillator livetime (deadtime-corrected) produced by Scintillators_Processing.
+            # Each scintillator gets its OWN livetime — they can't share one.
+            total_livetime_s = getattr(self.processor, f'total_livetime_scint{scint_idx}_s')
+
+            # ── Convert counts → rate ────────────────────────────────────────
+            # rate [events/s per bin] = counts / livetime.
+            # Dividing by livetime makes the y-axis independent of how long the run was,
+            # so spectra from different runs can be compared on equal footing.
+            rate_all = counts_all / total_livetime_s
+            rate_coinc = counts_coinc / total_livetime_s
+            rate_no_coinc = counts_no_coinc / total_livetime_s
+
+            # ── Poisson uncertainty on the rate ──────────────────────────────
+            # If you count N events in a bin, the statistical uncertainty is σ_N = √N (Poisson rule).
+            # Since rate = N / T and T is a constant, the uncertainty divides the same way:
+            #     σ_rate = √N / T
+            err_all = np.sqrt(counts_all) / total_livetime_s
+            err_coinc = np.sqrt(counts_coinc) / total_livetime_s
+            err_no_coinc = np.sqrt(counts_no_coinc) / total_livetime_s
+
+            # Geometric-mean bin centers (correct choice for log-spaced bins,
+            # rather than the arithmetic mean which would bias toward the upper edge).
+            bin_centers = np.sqrt(bin_edges[:-1] * bin_edges[1:])
+
+            # ── Moyal fit on the coincident spectrum ─────────────────────────
+            # Only the coincident events get a Moyal fit here — they form a clean MIP peak.
+            # FIT_X_MIN / FIT_X_MAX restrict the fit window to the peak region (per-scint).
+            # With no fit ranges set (fixed-MPV path), the fit is skipped and all fit
+            # outputs are None so the overlay below is suppressed.
+            if moyal_fit_ranges is not None:
+                FIT_X_MIN, FIT_X_MAX = moyal_fit_ranges[scint_idx - 1]
+                fit_x_coinc, moyal_y_coinc, label_coinc, popt_coinc = self.fit_moyal(bin_centers, rate_coinc, FIT_X_MIN, FIT_X_MAX)
+            else:
+                fit_x_coinc = moyal_y_coinc = label_coinc = popt_coinc = None
+
+            # ── Upper panel: rate spectra with error bands ───────────────────
+            # Plot rate ± σ_rate as a shaded band for each population.
+            # fill_between_steps draws the band as horizontal step segments (matching
+            # the histogram bin structure) rather than a smooth interpolation.
+            colors_list = ['teal', 'darkorange', 'steelblue']
+            labels_list = ['All Events', 'Non-Coincident', 'Coincident']
+
+            for rate, err, c, lbl in zip(
+                [rate_all, rate_no_coinc, rate_coinc],
+                [err_all, err_no_coinc, err_coinc],
+                colors_list, labels_list
+            ):
+                # Draw the ±σ uncertainty band on the upper panel.
+                self.fill_between_steps(bin_centers, rate + err, rate - err, color=c, alpha=0.5, ax=ax)
+                ax.stairs(rate, bin_edges, color=c, linewidth=1.5)
+                # Off-screen dummy line so the legend shows a solid line entry
+                # (fill_between alone doesn't produce a clean legend handle).
+                ax.plot([1e14], [1e14], color=c, linewidth=2, label=lbl)
+
+            # Overlay the Moyal fit if it converged.
+            if moyal_y_coinc is not None:
+                ax.plot(fit_x_coinc, moyal_y_coinc, 'k--', linewidth=2, label=label_coinc)
+
+            # Log–log axes for the rate spectrum.
+            ax.set_xscale('log'); ax.set_yscale('log')
+            ax.set_xlim(bin_edges[0], bin_edges[-1])
+            # Leave headroom above the maximum rate so the legend doesn't overlap data.
+            ax.set_ylim(1e-5, rate_all.max() * 5)
+            ax.set_title(f'Scintillator {scint_idx}', fontsize=13)
+            ax.grid(True, which='both', linestyle='--', alpha=0.4)
+            ax.legend(fontsize=10)
+
+            # ── Lower panel: ratio of each spectrum to all_events ────────────
+            # For each (rate, err) pair, plot (rate ± err) / rate_all as a band.
+            # This shows what FRACTION of all events in each bin is coincident vs non-coincident,
+            # with the uncertainty band propagated from the numerator only (denominator treated as exact).
+            #
+            # np.divide(..., out=zeros, where=rate_all != 0) safely handles bins where
+            # rate_all is zero (which would otherwise raise a divide-by-zero warning and
+            # produce inf/NaN). In those bins the ratio is set to 0 instead.
+            for rate, err, c in zip(
+                [rate_no_coinc, rate_coinc],
+                [err_no_coinc, err_coinc],
+                ['darkorange', 'steelblue']
+            ):
+                upper = np.divide(rate + err, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
+                lower = np.divide(rate - err, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
+                ax.stairs(rate, bin_edges, color=c, linewidth=1.5)
+                self.fill_between_steps(bin_centers, upper, lower, color=c, alpha=0.7, ax=ax2)
+
+            # Reference line at ratio = 1 (i.e. that population = all events in that bin).
+            ax2.axhline(1.0, color='black', linestyle='--', linewidth=1)
+            ax2.set_xlabel('SiPM Peak Voltage [mV]', fontsize=12)
+            # Ratios are bounded between 0 and 1 by construction (each subset ⊆ all_events).
+            ax2.set_ylim(0, 1.1)
+            ax2.grid(True, which='both', linestyle='--', alpha=0.4)
+
+        # Shared y-axis labels (only on the leftmost column to avoid clutter).
+        axes[0][0].set_ylabel(r'Rate/bin [s$^{-1}$]', fontsize=12)
+        axes[1][0].set_ylabel('Ratio', fontsize=12)
+        plt.suptitle(r'Rate Spectra with Poisson Uncertainty Bands ($\sigma_i = \sqrt{N_i}\,/\,T_{\mathrm{live}}$)', fontsize=14)
+        plt.tight_layout()
+        finish_mpl(fig, "rate_spectra")
 
 
 
@@ -1405,7 +1499,7 @@ def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetim
         x = mean across scints  (SiPM_scints_avg_MIP_ampcal)
         y = std  across scints  (SiPM_scints_std_MIP_ampcal)
 
-    Mirrors Detector_Analysis.plot_density_heatmaps but on the ampcal columns.
+    Mirrors Detector_Analysis.two_dimensional_histograms but on the ampcal columns.
 
     col : str, suffix of the columns to use (e.g. 'MIP_ampcal' or 'MIP_Tcal'), defaults to 'MIP_ampcal';
     normalize_by_livetime : if True, z = sum(1/livetime) -> rate [s^-1]
@@ -1424,7 +1518,7 @@ def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetim
     sub = master[master[avg_col] >= min_mip].copy()
 
     if normalize_by_livetime:
-        livetime = float(np.mean([getattr(analysis.processor, f'total_livetime_scint{i}_s') for i in range(1, n + 1)])) # get the average livetime across the n scintillators, find the average
+        livetime = analysis._mean_livetime() # get the average livetime across the n scintillators, find the average
         print(f"[ampcal heatmap] normalizing by livetime = {livetime:.2f} s")
         sub["_rate_weight"] = 1.0 / livetime # weight each event by the inverse of the average livetime to get a rate in s^-1; this way, the heatmap's z-axis will represent a rate that is comparable across runs of different duration
         z, histfunc, cbar = "_rate_weight", "sum", "Normalized counts [s\u207b\u00b9]" # z is the column to aggregate for the heatmap, histfunc is the aggregation function to apply to that column (sum of weights gives a rate), cbar is the colorbar title
@@ -1588,10 +1682,10 @@ def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
 #     analysis = Detector_Analysis(scintillators_processor, dl_processor, debug=Debug)
     
 #     if Moyal_fit_ranges is not None:
-#         analysis.rate_spectra_with_moyal(moyal_fit_ranges=Moyal_fit_ranges)
+#         analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=Moyal_fit_ranges)
 
 #     if MPVs is not None:
-#         analysis.rate_spectra_with_fixed_MPVs(MPVs=MPVs)
+#         analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=MPVs)
 
 #     if MPVs is None and Moyal_fit_ranges is None:
 #         raise ValueError("Must provide either Moyal fit ranges or fixed MPVs for the spectra.")

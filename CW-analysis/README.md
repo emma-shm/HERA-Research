@@ -2,6 +2,7 @@
 Scripts for calibrating and analyzing HERA's typical three-scintillator CW detectors, using calibration for particle identification
 
 ## `CW_calibration_grounddata.ipynb`
+NOTE: NOTEBOOK OUT OF DATE
 All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.py
 
 
@@ -34,7 +35,12 @@ built around three classes plus a set of top-level helpers.
   applies an amplitude calibration that shifts each channel to a global-mean
   MPV, and derives cross-scintillator mean/std columns. Produces the calibrated
   rate spectra and the 2D density heatmaps, with all rates livetime-normalized
-  so runs of different duration are directly comparable.
+  so runs of different duration are directly comparable. Two top-level entry
+  points, depending on whether MPVs need to be fit or are already known:
+  `calibrate_and_analyze_grounddata(moyal_fit_ranges)` fits a Moyal per
+  scintillator to extract the MPV, while
+  `analyze_calibrated_data_with_fixed_MPVs(MPVs, ...)` uses externally supplied
+  MPVs and skips fitting entirely.
 
 **Helper functions, that CAN be imported and used in other scripts if desired**
 
@@ -78,10 +84,10 @@ Bench/ground calibration driver. Runs the lab datasets through the pipeline to
 establish the reference MPVs and the temperature dependence of the detector
 gain. In order, it:
 
-- **Room-temperature run** — a 14-hour run fit with Moyal (`rate_spectra_with_moyal`)
+- **Room-temperature run** — a 14-hour run fit with Moyal (`calibrate_and_analyze_grounddata`)
   to extract the baseline per-scintillator MPVs.
 - **Cs-137 source + Cs-137 background runs** — processed with those fixed MPVs
-  (`rate_spectra_with_fixed_MPVs`) and an amplitude-calibrated density heatmap
+  (`analyze_calibrated_data_with_fixed_MPVs`) and an amplitude-calibrated density heatmap
   (`plot_density_heatmap_ampcal`).
 - **Temperature-varying runs** (fridge, freezer, room temp) — each long run is
   cut into temperature sections with `split_by_time_marks`, and each kept
@@ -148,8 +154,8 @@ proc = Scintillators_Processing([scint1_fp, scint2_fp, scint3_fp], df)
 
 # 3) calibrate + plot — pick ONE mode:
 analysis = Detector_Analysis(proc, df)
-analysis.rate_spectra_with_moyal(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
-# analysis.rate_spectra_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])                # or supply MPVs
+analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
+# analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])                # or supply MPVs
 ```
 
 Results live on the returned `analysis`: `analysis.master_df` (calibrated event
@@ -198,5 +204,3 @@ If you use this code or reference this work, please cite the associated thesis:
 ## Contact
 
 Maintained by [@emma-shm](https://github.com/emma-shm). Questions, issues, or contributions are welcome via the repo's [Issues](https://github.com/emma-shm/HERA-Research/issues) page.
-
-
