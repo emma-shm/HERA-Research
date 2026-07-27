@@ -1038,7 +1038,7 @@ class Detector_Analysis:
         plt.tight_layout()
         self._finish_mpl(fig, "calibration_comparison")
 
-    def two_dimensional_histograms(self):
+    def two_dimensional_histograms(self, col='MIP', cbar_max=None):
         '''
         Wide-view 2D density heatmap: cross-scintillator spread (std) vs. mean amplitude, MIP-normalized, across the FULL amplitude range (no zoom).
 
@@ -1047,6 +1047,11 @@ class Detector_Analysis:
 
         This is the diagnostic view for seeing the overall shape of cross-scint spread across the entire spectrum (noise floor through MIP peak and beyond) — one heatmap, uncalibrated only. Contrast with
         MIPregion_two_dimensional_histograms(), which restricts to a narrow window around the MIP peak and compares raw vs. amplitude-calibrated side by side.
+        
+        Args:
+            col      : str, suffix of the columns to use (e.g. 'MIP', 'MIP_ampcal', or 'MIP_Tcal'); defaults to 'MIP' (uncalibrated) ie. if you want a 2D histogram of the regular MIP amplitudes, use the default; if you want a 2D histogram of the amplitude-calibrated MIP amplitudes, use 'MIP_ampcal'
+            cbar_max : optional fixed upper bound for the colorbar; if None, uses the original fixed 500e-6 default for col='MIP', else auto-scales
+        
         '''
         if not hasattr(self, 'master_df'):
             raise ValueError("master_df not set — run build_master_df() first.")
@@ -1061,7 +1066,11 @@ class Detector_Analysis:
         tag = self.coinc_tag
         coinc_label = '&'.join(str(i) for i in range(1, n + 1))
         mv_col  = f"SiPM_mV_{tag}_scint1"
-        mip_col = f"SiPM_MIP_{tag}_scint1"
+        mip_col = f"SiPM_MIP_{tag}_scint1" # choosing scint1 arbitrarily for the x-axis, since all scints are MIP-normalized and should be comparable
+
+        avg_col, std_col = f"SiPM_scints_avg_{col}", f"SiPM_scints_std_{col}"
+        cal_label = {'MIP': 'MIP-normalized', 'MIP_ampcal': 'amplitude-calibrated MIP',
+                     'MIP_Tcal': 'temperature-calibrated MIP'}.get(col, col)
 
         # ── Livetime normalization ───────────────────────────────────────
         # Per-bin counts → per-bin rate [s⁻¹] so heatmaps are comparable across
@@ -1074,11 +1083,10 @@ class Detector_Analysis:
         if self.debug:
             print("=" * 70)
             print(f"DEBUG two_dimensional_histograms | master rows: {len(master)} | min_mip={min_mip}")
-            for c in [mv_col, mip_col, "SiPM_scints_avg_MIP",
-                    "SiPM_scints_std", "SiPM_scints_std_MIP"]:
-                col = master[c]
-                print(f"  {c:30s} non-null={col.notna().sum():5d} "
-                    f"min={col.min():.4g} max={col.max():.4g}")
+            for c in [mv_col, mip_col, avg_col, "SiPM_scints_std", std_col]:
+                column = master[c]
+                print(f"  {c:30s} non-null={column.notna().sum():5d} "
+                    f"min={column.min():.4g} max={column.max():.4g}")
             print("=" * 70)
 
         # ── MIP-normalized: average vs spread ───────────────────────────
@@ -1086,27 +1094,59 @@ class Detector_Analysis:
         # an event can pass here even if one scint's reading is below noise_threshold,
         # as long as the mean clears it. Contrast with MIPregion_two_dimensional_histograms(),
         # which requires EVERY scint individually >= min_mip.
-        sub_avg = master[master["SiPM_scints_avg_MIP"] >= min_mip].copy() # slicing the master df to only include the rows where the average MIP amplitude across all three scints is above threshold
+        sub_avg = master[master[avg_col] >= min_mip].copy() # slicing the master df to only include the rows where the average MIP amplitude across all three scints is above threshold
         sub_avg["_rate_weight"] = 1.0 / livetime
-        print(f"[MIP avg]  rows with SiPM_scints_avg_MIP >= {min_mip}: {len(sub_avg)}")
-        print(f"           of those, finite SiPM_scints_std_MIP (y-axis): "
-              f"{sub_avg['SiPM_scints_std_MIP'].notna().sum()}")
+        print(f"[MIP avg]  rows with {avg_col} >= {min_mip}: {len(sub_avg)}")
+        print(f"           of those, finite {std_col} (y-axis): "
+              f"{sub_avg[std_col].notna().sum()}")
+        
+        if cbar_max is not None:
+            range_color = (0, cbar_max)
+        elif col == 'MIP':
+            range_color = (0, 500e-6)   # preserve original fixed default
+        else:
+            range_color = None
+
         fig_mip = px.density_heatmap(
             sub_avg,
-            x="SiPM_scints_avg_MIP",
-            y="SiPM_scints_std_MIP",
+            x=avg_col,
+            y=std_col,
             z="_rate_weight", histfunc="sum",
-            nbinsx=50, nbinsy=50, width=800, height=600, range_color=(0, 500e-6),
+            nbinsx=50, nbinsy=50, width=800, height=600, range_color=range_color,
             color_continuous_scale="Inferno",
             labels={
-                "SiPM_scints_avg_MIP": f"Mean across {n} scints [MIP]",
-                "SiPM_scints_std_MIP": f"Std across {n} scints [MIP]",
+                avg_col: f"Mean across {n} scints [MIP]",
+                std_col: f"Std across {n} scints [MIP]",
             },
-            title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean (MIP-normalized)<br>"
+            title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean ({cal_label})<br>"
                    f"(N={len(sub_avg)} events, rate-normalized by livetime = {livetime:.1f} s)"),
         )
         fig_mip.update_coloraxes(colorbar_title="Normalized Counts")
         self._finish_plotly(fig_mip, "density_heatmap")
+
+        # ── Additional: raw mV (not MIP-normalized) — mean vs spread ─────
+        min_mv = min_mip * self.global_mean_mpv   # convert MIP noise threshold to mV so both plots filter consistently
+        sub_mv = master[master["SiPM_scints_avg"] >= min_mv].copy()
+        sub_mv["_rate_weight"] = 1.0 / livetime
+        print(f"[raw mV]   rows with SiPM_scints_avg >= {min_mv}: {len(sub_mv)}")
+        print(f"           of those, finite SiPM_scints_std (y-axis): "
+              f"{sub_mv['SiPM_scints_std'].notna().sum()}")
+        fig_mv = px.density_heatmap(
+            sub_mv,
+            x="SiPM_scints_avg",
+            y="SiPM_scints_std",
+            z="_rate_weight", histfunc="sum",
+            nbinsx=50, nbinsy=50, width=800, height=600,
+            color_continuous_scale="Inferno",
+            labels={
+                "SiPM_scints_avg": f"Mean across {n} scints [mV]",
+                "SiPM_scints_std": f"Std across {n} scints [mV]",
+            },
+            title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean (raw mV)<br>"
+                   f"(N={len(sub_mv)} events, rate-normalized by livetime = {livetime:.1f} s)"),
+        )
+        fig_mv.update_coloraxes(colorbar_title="Normalized Counts")
+        self._finish_plotly(fig_mv, "density_heatmap_mV")
 
     def MIPregion_two_dimensional_histograms(self, mip_window=None):
         '''
@@ -1474,124 +1514,7 @@ class Detector_Analysis:
             rows["noise_threshold"]    = d["noise_threshold"]
             rows.to_csv(path, index=False)
             print(f"[saved] {path}")
-            
 
-# ================== Helper functions for saving data ==================
-def set_results_dir(name=None):
-    """Call once before processing. Makes ./<name>_results/ and turns on saving."""
-    global RESULTS_DIR, SAVE_PLOTS
-    if name is None:
-        name = input("Name for this dataset (e.g. may31flight): ").strip()
-    RESULTS_DIR = f"{name}_results"
-    SAVE_PLOTS  = True
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    print(f"[plots] saving to ./{RESULTS_DIR}/")
-    return RESULTS_DIR
-
-def finish_mpl(fig, name):
-    """Save a matplotlib fig to RESULTS_DIR if saving is on, else show it."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.png")
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        print(f"[saved] {path}")
-        plt.close(fig)
-    else:
-        plt.show()
-
-def finish_plotly(fig, name):
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.png")
-        fig.write_image(path, scale=2)   # scale=2 ≈ 2x resolution
-        print(f"[saved] {path}")
-    else:
-        fig.show()
-
-def save_table(df, name):
-    """Save a DataFrame to RESULTS_DIR as CSV when saving is on."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.csv")
-        df.to_csv(path, index=False)
-        print(f"[saved] {path}")
-
-def save_summary(d, name):
-    """Save fit constants as a per-scintillator CSV (reloadable) when saving is on."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.csv")
-        n = len(d["mpv_per_scint"])
-        rows = pd.DataFrame({
-            "scint":        list(range(1, n + 1)),
-            "mpv_mV":       [float(d["mpv_per_scint"][i]) for i in range(1, n + 1)],
-            "amp_shift_mV": [float(x) for x in d["amp_shifts"]],
-            "livetime_s":   [float(x) if x is not None else float("nan")
-                             for x in d["livetime_s_per_scint"]],
-        })
-        rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
-        rows["noise_threshold"]    = d["noise_threshold"]
-        rows.to_csv(path, index=False)
-        print(f"[saved] {path}")
-
-
-
-
-# ================== Helper functions for plotting in other scripts ==================
-def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetime=True, cbar_max=None):
-    """
-    2D density heatmap of the amplitude-calibrated cross-scint MIP:
-        x = mean across scints  (SiPM_scints_avg_MIP_ampcal)
-        y = std  across scints  (SiPM_scints_std_MIP_ampcal)
-
-    Mirrors Detector_Analysis.two_dimensional_histograms but on the ampcal columns.
-
-    col : str, suffix of the columns to use (e.g. 'MIP_ampcal' or 'MIP_Tcal'), defaults to 'MIP_ampcal';
-    normalize_by_livetime : if True, z = sum(1/livetime) -> rate [s^-1]
-                            (comparable across runs of different duration);
-                            if False, z = raw counts.
-    """
-    master  = analysis.master_df
-    n       = len(analysis.processor.fps)
-    min_mip = analysis.noise_threshold
-    tag     = analysis.coinc_tag
-    coinc_label = '&'.join(str(i) for i in range(1, n + 1))
-
-    avg_col, std_col = "SiPM_scints_avg_" + col, "SiPM_scints_std_" + col
-
-    # keep rows where the (calibrated) mean MIP clears the noise threshold
-    sub = master[master[avg_col] >= min_mip].copy()
-
-    if normalize_by_livetime:
-        livetime = analysis._mean_livetime() # get the average livetime across the n scintillators, find the average
-        print(f"[ampcal heatmap] normalizing by livetime = {livetime:.2f} s")
-        sub["_rate_weight"] = 1.0 / livetime # weight each event by the inverse of the average livetime to get a rate in s^-1; this way, the heatmap's z-axis will represent a rate that is comparable across runs of different duration
-        z, histfunc, cbar = "_rate_weight", "sum", "Normalized counts [s\u207b\u00b9]" # z is the column to aggregate for the heatmap, histfunc is the aggregation function to apply to that column (sum of weights gives a rate), cbar is the colorbar title
-        norm_note = f"rate-normalized by livetime = {livetime:.1f} s" # note to include in the plot title about the normalization
-    else:
-        z, histfunc, cbar = None, "count", "Counts" # if no rate normalizing, then z is None (so heatmap will just count rows), histfunc is "count" to count rows, and cbar title is just "Counts"
-        norm_note = "raw counts"
-
-    print(f"[ampcal heatmap] rows with {avg_col} >= {min_mip}: {len(sub)} "
-          f"(finite std: {sub[std_col].notna().sum()})")
-
-    fig = px.density_heatmap(
-        sub,
-        x=avg_col, y=std_col,
-        z=z, histfunc=histfunc,
-        nbinsx=50, nbinsy=50, width=800, height=600,
-        color_continuous_scale="Inferno",
-        range_color=(0, cbar_max) if cbar_max is not None else None,
-        labels={
-            avg_col: f"Mean across {n} scints [MIP, ampcal]",
-            std_col: f"Std across {n} scints [MIP, ampcal]",
-        },
-        title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean "
-               f"(amplitude-calibrated MIP)<br>(N={len(sub)} events, {norm_note})"),
-    )
-    fig.update_coloraxes(colorbar_title=cbar)
-    finish_plotly(fig, "ampcal_heatmap")
- 
 def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
     """
     Split a datalogger + scintillator set into the sections BETWEEN a list of
@@ -1661,6 +1584,119 @@ def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
                          'datalogger': dl_out, 'scints': scint_out})
 
     return sections 
+
+# ================== Helper functions for saving data ==================
+def set_results_dir(name=None):
+    """Call once before processing. Makes ./<name>_results/ and turns on saving."""
+    global RESULTS_DIR, SAVE_PLOTS
+    if name is None:
+        name = input("Name for this dataset (e.g. may31flight): ").strip()
+    RESULTS_DIR = f"{name}_results"
+    SAVE_PLOTS  = True
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    print(f"[plots] saving to ./{RESULTS_DIR}/")
+    return RESULTS_DIR
+
+def finish_mpl(fig, name):
+    """Save a matplotlib fig to RESULTS_DIR if saving is on, else show it."""
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.png")
+        fig.savefig(path, dpi=150, bbox_inches='tight')
+        print(f"[saved] {path}")
+        plt.close(fig)
+    else:
+        plt.show()
+
+def finish_plotly(fig, name):
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.png")
+        fig.write_image(path, scale=2)   # scale=2 ≈ 2x resolution
+        print(f"[saved] {path}")
+    else:
+        fig.show()
+
+def save_table(df, name):
+    """Save a DataFrame to RESULTS_DIR as CSV when saving is on."""
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.csv")
+        df.to_csv(path, index=False)
+        print(f"[saved] {path}")
+
+def save_summary(d, name):
+    """Save fit constants as a per-scintillator CSV (reloadable) when saving is on."""
+    if SAVE_PLOTS:
+        os.makedirs(RESULTS_DIR, exist_ok=True)
+        path = os.path.join(RESULTS_DIR, f"{name}.csv")
+        n = len(d["mpv_per_scint"])
+        rows = pd.DataFrame({
+            "scint":        list(range(1, n + 1)),
+            "mpv_mV":       [float(d["mpv_per_scint"][i]) for i in range(1, n + 1)],
+            "amp_shift_mV": [float(x) for x in d["amp_shifts"]],
+            "livetime_s":   [float(x) if x is not None else float("nan")
+                             for x in d["livetime_s_per_scint"]],
+        })
+        rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
+        rows["noise_threshold"]    = d["noise_threshold"]
+        rows.to_csv(path, index=False)
+        print(f"[saved] {path}")
+
+# # ================== Helper functions for plotting in other scripts ==================
+# def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetime=True, cbar_max=None):
+#     """
+#     2D density heatmap of the amplitude-calibrated cross-scint MIP:
+#         x = mean across scints  (SiPM_scints_avg_MIP_ampcal)
+#         y = std  across scints  (SiPM_scints_std_MIP_ampcal)
+
+#     Mirrors Detector_Analysis.two_dimensional_histograms but on the ampcal columns.
+
+#     col : str, suffix of the columns to use (e.g. 'MIP_ampcal' or 'MIP_Tcal'), defaults to 'MIP_ampcal';
+#     normalize_by_livetime : if True, z = sum(1/livetime) -> rate [s^-1]
+#                             (comparable across runs of different duration);
+#                             if False, z = raw counts.
+#     """
+#     master  = analysis.master_df
+#     n       = len(analysis.processor.fps)
+#     min_mip = analysis.noise_threshold
+#     tag     = analysis.coinc_tag
+#     coinc_label = '&'.join(str(i) for i in range(1, n + 1))
+
+#     avg_col, std_col = "SiPM_scints_avg_" + col, "SiPM_scints_std_" + col
+
+#     # keep rows where the (calibrated) mean MIP clears the noise threshold
+#     sub = master[master[avg_col] >= min_mip].copy()
+
+#     if normalize_by_livetime:
+#         livetime = analysis._mean_livetime() # get the average livetime across the n scintillators, find the average
+#         print(f"[ampcal heatmap] normalizing by livetime = {livetime:.2f} s")
+#         sub["_rate_weight"] = 1.0 / livetime # weight each event by the inverse of the average livetime to get a rate in s^-1; this way, the heatmap's z-axis will represent a rate that is comparable across runs of different duration
+#         z, histfunc, cbar = "_rate_weight", "sum", "Normalized counts [s\u207b\u00b9]" # z is the column to aggregate for the heatmap, histfunc is the aggregation function to apply to that column (sum of weights gives a rate), cbar is the colorbar title
+#         norm_note = f"rate-normalized by livetime = {livetime:.1f} s" # note to include in the plot title about the normalization
+#     else:
+#         z, histfunc, cbar = None, "count", "Counts" # if no rate normalizing, then z is None (so heatmap will just count rows), histfunc is "count" to count rows, and cbar title is just "Counts"
+#         norm_note = "raw counts"
+
+#     print(f"[ampcal heatmap] rows with {avg_col} >= {min_mip}: {len(sub)} "
+#           f"(finite std: {sub[std_col].notna().sum()})")
+
+#     fig = px.density_heatmap(
+#         sub,
+#         x=avg_col, y=std_col,
+#         z=z, histfunc=histfunc,
+#         nbinsx=50, nbinsy=50, width=800, height=600,
+#         color_continuous_scale="Inferno",
+#         range_color=(0, cbar_max) if cbar_max is not None else None,
+#         labels={
+#             avg_col: f"Mean across {n} scints [MIP, ampcal]",
+#             std_col: f"Std across {n} scints [MIP, ampcal]",
+#         },
+#         title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean "
+#                f"(amplitude-calibrated MIP)<br>(N={len(sub)} events, {norm_note})"),
+#     )
+#     fig.update_coloraxes(colorbar_title=cbar)
+#     finish_plotly(fig, "ampcal_heatmap")
 
 # def split_flight_and_background(datalogger_fp, scint_fps, ground_band=50.0):
 #     # Build Absolute Timer with the existing class.
