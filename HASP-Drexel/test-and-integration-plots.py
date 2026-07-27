@@ -43,7 +43,7 @@ time_marks = [
     (26764, "2:11 pm"),
 ]
 
-output_dir = "test_and_integration_plots"
+output_dir = "'/Users/emmamartignoni/HERA-Research/HASP-Drexel/test_and_integration_plots"
 os.makedirs(output_dir, exist_ok=True)
 
 def add_time_marks(ax):

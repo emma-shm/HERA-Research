@@ -4,3 +4,4 @@ __pycache__/
 .DS_Store
 Results/
 test_and_integration_plots/
+Results_fakedata/

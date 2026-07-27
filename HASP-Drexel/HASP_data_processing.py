@@ -16,14 +16,19 @@ Steps:
   6. Build a unified DataFrame plus a drift-diagnostic histogram.
 """
 
-# # === File paths for fake data ============================================
-# teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_2hr.csv'
-# teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_2hr.csv'
+
+DATA_DIR = '/Users/emmamartignoni/HERA-Research/HASP-Drexel'
+RESULTS_DIR = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/Results_fakedata'
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
-# === File paths for real data ============================================
-teensy1_fp = '/Users/emmamartignoni/Downloads/SiPM1Data1.csv'
-teensy2_fp = '/Users/emmamartignoni/Downloads/SiPM2Data1.csv'
+# # === File paths for very short fake data ============================================
+# teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_test.csv'
+# teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_test.csv'
+
+# === File paths for "2 hour data" (fake data) ============================================
+teensy1_fp = f'{DATA_DIR}/sipm_teensy_1_2hr.csv'
+teensy2_fp = f'{DATA_DIR}/sipm_teensy_2_2hr.csv'
 
 # Load raw teensy CSVs
 df1 = pd.read_csv(teensy1_fp)
@@ -70,11 +75,6 @@ COINCIDENCE_GROUPS = {
 #  13  14
 #  15  16
 
-
-# All plots get saved to ./results/ relative to wherever this script is run.
-# exist_ok=True so re-runs don't crash if the folder is already there.
-RESULTS_DIR = 'sd_data_processing_results'
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ======== RAW COUNT DATA SUBPLOTS, BEFORE PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES ===================================
 # Diagnostic plots of each teensy's raw trigger counts vs time, organized by column and also layer
@@ -482,5 +482,60 @@ plot_grid(LAYER_GROUPS,  True,  'layer_counts_cumulative.png',  'Cumulative coun
 plot_grid(COLUMN_GROUPS, False, 'column_counts.png',            f'Counts per {TIME_BIN_S}s by column')
 plot_grid(COLUMN_GROUPS, True,  'column_counts_cumulative.png', 'Cumulative counts by column')
 plt.show()
+
+
+
+# ==================== SELF-VERIFICATION CHECKS ====================
+print("\n=== VERIFICATION ===")
+
+# 1. Row conservation: every input row appears exactly once in merged
+n_pairs = int(taken.sum())
+expected_rows = len(t1) + len(t2) - n_pairs
+print(f"Row conservation: {len(merged)} rows, expected {expected_rows}  "
+      f"{'PASS' if len(merged) == expected_rows else 'FAIL'}")
+
+# 2. One-to-one pairing: no T2 row used twice
+t2_used = merged['_t2_orig_idx'].dropna()
+print(f"No double-claimed T2 rows: {'PASS' if not t2_used.duplicated().any() else 'FAIL'}")
+
+# 3. Trigger count conservation: per-channel totals in merged (t1 side)
+#    must equal the raw df1 column sums — nothing lost or duplicated in the merge
+raw_t1_totals = pd.read_csv(teensy1_fp)[TRIGGER_BINARY_COLS].sum()
+merged_t1_totals = merged[[c + '_t1' for c in TRIGGER_BINARY_COLS]].sum()
+ok = all(raw_t1_totals.values == merged_t1_totals.values)
+print(f"T1 trigger totals preserved through merge: {'PASS' if ok else 'FAIL'}")
+
+# 4. Independent recount of each coincidence level (direct boolean AND,
+#    no cumsum) vs the final value of the cumulative column
+print("Coincidence recount (direct AND vs cumsum final):")
+for col_name, trigs in COINCIDENCE_GROUPS.items():
+    for i in range(2, len(trigs) + 1):
+        label = '&'.join(str(n) for n in trigs[:i])
+        cw = f'{col_name}_CW_{label}'
+        direct = ((merged[[f'sipm_{n:02d}_trigger_t1' for n in trigs[:i]]] == 1).all(axis=1)
+                  & (merged['match_status'] == 'matched')).sum()
+        final = int(merged[cw].iloc[-1])
+        print(f"  {cw}: direct={direct}  cumsum={final}  {'PASS' if direct == final else 'FAIL'}")
+
+# 5. Nesting: adding a trigger to the AND can only reduce counts
+for col_name, trigs in COINCIDENCE_GROUPS.items():
+    finals = []
+    for i in range(2, len(trigs) + 1):
+        label = '&'.join(str(n) for n in trigs[:i])
+        finals.append(int(merged[f'{col_name}_CW_{label}'].iloc[-1]))
+    ok = all(finals[k] >= finals[k+1] for k in range(len(finals)-1))
+    print(f"  {col_name} nesting {finals}: {'PASS' if ok else 'FAIL'}")
+
+# 6. Delta columns reconstruct the cumulative total (catches the row-0 NaN edge)
+for c in [c for c in merged.columns if c.startswith('delta_')]:
+    cum_final = int(merged[c.replace('delta_', '')].iloc[-1])
+    delta_sum = int(merged[c].sum())
+    if delta_sum != cum_final:
+        print(f"  {c}: sum(delta)={delta_sum} != cumulative final={cum_final}  FAIL")
+print("Delta reconstruction check done (silent = all PASS)")
+
+# 7. Drift bounded by tolerance around the estimated offset
+drift_ok = ((drift - CLOCK_OFFSET).abs() <= MERGE_TOLERANCE + 1e-9).all()
+print(f"All matched drift within CLOCK_OFFSET ± MERGE_TOLERANCE: {'PASS' if drift_ok else 'FAIL'}")
 
 
