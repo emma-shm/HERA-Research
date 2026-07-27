@@ -387,9 +387,9 @@ class Scintillators_Processing:
 
 
 class Detector_Analysis:
-    def __init__(self, processor, datalogger_df, debug=True):
+    def __init__(self, processor, datalogger_df, debug=True, results_dir=None):
         '''
-        Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run.
+        Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run. Pass a filepath for results_dir in order for results to be saved class-wide, otherwise results just appear in interactive window.
         This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs, and has the following methods:
 
             Two top-level pipelines (call one of these directly; each runs the full analysis/plotting chain):
@@ -413,6 +413,12 @@ class Detector_Analysis:
                 - self.master_df       : master dataframe on the datalogger timeline, with all normalized/calibrated/cross-scint columns; set in build_master_df
                 - self.mpv_per_scint, self.global_mean_mpv, self.amp_shifts : per-scint MPVs, their mean, and the per-scint mV shifts used for amplitude calibration; set in build_master_df
         '''
+        self.results_dir = results_dir
+        self.save_plots  = results_dir is not None # setting class-wide flag for whether to save plots or just show them interactively, based on if results directory is provided
+        if self.save_plots:
+            os.makedirs(self.results_dir, exist_ok=True)
+            print(f"[plots] saving to {self.results_dir}/")
+
         self.processor = processor
         self.datalogger_df = datalogger_df
         self.moyal_fit_ranges = None
@@ -560,9 +566,9 @@ class Detector_Analysis:
         print(f"Master dataframe shape: {master.shape}")
         print(f"MPVs used: {mpv_per_scint}")
         print(f"Columns: {master.columns.tolist()}")
-        save_table(master, "master_df")
+        self._save_table(master, "master_df")
         n = len(self.processor.fps)
-        save_summary({
+        self._save_summary({
             "total_event_rate":        self.processor.datalogger_df['Events CW1&2&3'].sum() / self.processor.datalogger_df['Absolute Timer (S)'].max(),
             "mpv_per_scint":        self.mpv_per_scint,
             "global_mean_mpv":      self.global_mean_mpv,
@@ -811,7 +817,7 @@ class Detector_Analysis:
             i+=1
         axes[0].set_ylabel('Rate / Moyal Peak', fontsize=12)
         plt.tight_layout()
-        finish_mpl(fig, "mip_normalized")
+        self._finish_mpl(fig, "mip_normalized")
 
     def calibration_comparison(self, moyal_fit_ranges=None, noise_threshold=None):
         """
@@ -1030,7 +1036,7 @@ class Detector_Analysis:
                     f'global mean rate = {global_mean_rate:.4f} s⁻¹',
                     fontsize=13)
         plt.tight_layout()
-        finish_mpl(fig, "calibration_comparison")
+        self._finish_mpl(fig, "calibration_comparison")
 
     def two_dimensional_histograms(self):
         '''
@@ -1100,7 +1106,7 @@ class Detector_Analysis:
                    f"(N={len(sub_avg)} events, rate-normalized by livetime = {livetime:.1f} s)"),
         )
         fig_mip.update_coloraxes(colorbar_title="Normalized Counts")
-        finish_plotly(fig_mip, "density_heatmap")
+        self._finish_plotly(fig_mip, "density_heatmap")
 
     def MIPregion_two_dimensional_histograms(self, mip_window=None):
         '''
@@ -1231,7 +1237,7 @@ class Detector_Analysis:
                         f"— uncalibrated vs amplitude-calibrated  "
                         f"(N={len(master)} events, all scints ≥ {min_mip} MIP)"),
         )
-        finish_plotly(fig, "std_heatmap")
+        self._finish_plotly(fig, "std_heatmap")
 
     # ------------ ALL SCINTS: Plotting All events, No coincidence events, and coincidence events WITH error ------------
     def fill_between_steps(self, x, y1, y2=0, h_align='mid', ax=None, lw=2, **kwargs):
@@ -1427,9 +1433,48 @@ class Detector_Analysis:
         axes[1][0].set_ylabel('Ratio', fontsize=12)
         plt.suptitle(r'Rate Spectra with Poisson Uncertainty Bands ($\sigma_i = \sqrt{N_i}\,/\,T_{\mathrm{live}}$)', fontsize=14)
         plt.tight_layout()
-        finish_mpl(fig, "rate_spectra")
+        self._finish_mpl(fig, "rate_spectra")
 
 
+    def _finish_mpl(self, fig, name):
+        if self.save_plots:
+            path = os.path.join(self.results_dir, f"{name}.png")
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            print(f"[saved] {path}")
+            plt.close(fig)
+        else:
+            plt.show()
+
+    def _finish_plotly(self, fig, name):
+        if self.save_plots:
+            path = os.path.join(self.results_dir, f"{name}.png")
+            fig.write_image(path, scale=2)
+            print(f"[saved] {path}")
+        else:
+            fig.show()
+
+    def _save_table(self, df, name):
+        if self.save_plots:
+            path = os.path.join(self.results_dir, f"{name}.csv")
+            df.to_csv(path, index=False)
+            print(f"[saved] {path}")
+
+    def _save_summary(self, d, name):
+        if self.save_plots:
+            path = os.path.join(self.results_dir, f"{name}.csv")
+            n = len(d["mpv_per_scint"])
+            rows = pd.DataFrame({
+                "scint":        list(range(1, n + 1)),
+                "mpv_mV":       [float(d["mpv_per_scint"][i]) for i in range(1, n + 1)],
+                "amp_shift_mV": [float(x) for x in d["amp_shifts"]],
+                "livetime_s":   [float(x) if x is not None else float("nan")
+                                for x in d["livetime_s_per_scint"]],
+            })
+            rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
+            rows["noise_threshold"]    = d["noise_threshold"]
+            rows.to_csv(path, index=False)
+            print(f"[saved] {path}")
+            
 
 # ================== Helper functions for saving data ==================
 def set_results_dir(name=None):
