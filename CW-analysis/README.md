@@ -78,7 +78,7 @@ produces all the calibration plots.
 (ordered `scint1 … scintN`).
 
 
-## `CW_calibration_grounddata.py`
+## `three_scint_calibration_grounddata.py`
 
 Bench/ground calibration driver. Runs the lab datasets through the pipeline to
 establish the reference MPVs and the temperature dependence of the detector
@@ -86,9 +86,6 @@ gain. In order, it:
 
 - **Room-temperature run** — a 14-hour run fit with Moyal (`calibrate_and_analyze_grounddata`)
   to extract the baseline per-scintillator MPVs.
-- **Cs-137 source + Cs-137 background runs** — processed with those fixed MPVs
-  (`analyze_calibrated_data_with_fixed_MPVs`) and an amplitude-calibrated density heatmap
-  (`plot_density_heatmap_ampcal`).
 - **Temperature-varying runs** (fridge, freezer, room temp) — each long run is
   cut into temperature sections with `split_by_time_marks`, and each kept
   section is Moyal-fit with its own tuned fit ranges (a `skip` set leaves out
@@ -105,11 +102,28 @@ plot.
 **Output used downstream:** the per-scint MPVs and the `MPV(T)` fit, which feed
 the flight analysis.
 
-## `flight-data-analysis.py`
+## three_scint_analysis_Cs137.py
+
+Applying the calibration methods to radioactive source testing.
+
+- **Cs-137 source + Cs-137 background runs** — processed with fixed MPVs
+  (`analyze_calibrated_data_with_fixed_MPVs`)
+
+
+## `May31st_flight_analysis.py`
 
 Flight data driver (May 31st flight). Applies the ground-calibration MPVs to the
-balloon flight and analyzes the run in segments. Defines a few flight-specific
-helpers on top of `calibration_methods`:
+balloon flight and analyzes the run in segments. Uses helpers defined in `flightanalysis_methods.py`
+
+The main block loads the flight datalogger and three scintillator files,
+processes the full run, trims it to the flight window, plots altitude vs. time
+as a sanity check (and prints max altitude before/after trimming to confirm the
+trim didn't clip the peak), then splits the flight into 4 time segments and runs
+the fixed-MPV analysis using the MPVs from `three_scint_calibration_grounddata.py`.
+
+
+## flightanalysis_methods.py
+Defines a few flight-specific helpers on top of `calibration_methods`:
 
 - **`trim_to_flight(...)`** — drops the pre-launch warmup (`lead_minutes`) and
   cuts the run where altitude returns to ground after apogee, writing trimmed
@@ -122,12 +136,6 @@ helpers on top of `calibration_methods`:
   objects.
 - **`analyze_flight_window(...)`** — convenience wrapper for a single
   `[t_start, t_end]` window.
-
-The main block loads the flight datalogger and three scintillator files,
-processes the full run, trims it to the flight window, plots altitude vs. time
-as a sanity check (and prints max altitude before/after trimming to confirm the
-trim didn't clip the peak), then splits the flight into 4 time segments and runs
-the fixed-MPV analysis using the MPVs from `CW_calibration_grounddata.py`.
 
 ---
 

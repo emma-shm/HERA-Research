@@ -153,7 +153,7 @@ class Datalogger_Processing:
 
 
 class Scintillators_Processing:
-    def __init__(self, filepaths, datalogger_df, show_plots=False, debug=False):
+    def __init__(self, filepaths, datalogger_df, show_plots=False, debug=False, results_dir=None):
         '''
         Class for processing scintillator files, for any number of scintillators. Instantiate the class once with a list of filepaths for all scintillator TXT files and the datalogger dataframe from the Datalogger_Processing class.
         The class has the following key methods, all of which are executed immediately when the class is instantiated:
@@ -169,10 +169,14 @@ class Scintillators_Processing:
             datalogger_df: datalogger dataframe from Datalogger_Processing() class (with Absolute Timer column already created)
         '''
         self.fps = filepaths
-        
         self.debug = debug
-
         self.show_plots = show_plots
+
+        self.results_dir = results_dir
+        self.save_plots  = results_dir is not None
+        if self.save_plots:
+            os.makedirs(self.results_dir, exist_ok=True)
+            print(f"[plots] saving to {self.results_dir}/")
 
         # Helpers for arbitrary-N coincidence naming
         n = len(filepaths)
@@ -314,7 +318,7 @@ class Scintillators_Processing:
 
     def plot_all_SiPM_distributions(self):
         '''Combined SiPM voltage distribution across all scintillators.'''
-        if not self.show_plots:
+        if not (self.show_plots or self.save_plots):
             return
 
         colors = ['blue', 'orange', 'green', 'red', 'purple']
@@ -338,11 +342,11 @@ class Scintillators_Processing:
         ax.set_yscale('log')
         ax.legend(fontsize=11)
         plt.tight_layout()
-        finish_mpl(fig, "sipm_all_scints")
+        self._finish_mpl(fig, "sipm_all_scints")
         plt.close(fig)
 
     def plot_SiPM_histograms(self, i, bins=100):
-        if not self.show_plots:
+        if not (self.show_plots or self.save_plots):
             return
         
         df = getattr(self, f'aligned_scint{i}')
@@ -376,8 +380,17 @@ class Scintillators_Processing:
         ax.set_yscale('log')
         ax.legend(fontsize=11)
         plt.tight_layout()
-        finish_mpl(fig, f"sipm_scint{i}")
+        self._finish_mpl(fig, f"sipm_scint{i}")
         plt.close(fig)
+
+    def _finish_mpl(self, fig, name):
+        if self.save_plots:
+            path = os.path.join(self.results_dir, f"{name}.png")
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            print(f"[saved] {path}")
+            plt.close(fig)
+        else:
+            plt.show()
 
 
 
@@ -430,9 +443,13 @@ class Detector_Analysis:
 
         self.debug = debug
 
-    def calibrate_and_analyze_grounddata(self, moyal_fit_ranges=None):
+    def calibrate_and_analyze_grounddata(self, moyal_fit_ranges=None, twodim_hist_args=None):
         """
         Fit a Moyal distribution per scintillator to determine and extract the MPV, then run the full pipeline using those fitted MPVS.
+
+        twodim_hist_args : optional dict passed through to two_dimensional_histograms,
+                            e.g. {'col': 'MIP_ampcal', 'cbar_max': 300e-6}. If None, uses
+                            two_dimensional_histograms' own defaults (col='MIP', cbar_max=None).
         """
         if moyal_fit_ranges is not None:
             self.moyal_fit_ranges = moyal_fit_ranges
@@ -440,9 +457,9 @@ class Detector_Analysis:
             raise ValueError("moyal_fit_ranges not set — pass it to this method or set self.moyal_fit_ranges first.")
 
         self.plot_rate_spectra_preview(self.moyal_fit_ranges)
-        self._run_pipeline()
+        self._run_pipeline(twodim_hist_args=twodim_hist_args)
 
-    def analyze_calibrated_data_with_fixed_MPVs(self, MPVs, noise_threshold=0.1, mip_window=(0.8, 1.2)):
+    def analyze_calibrated_data_with_fixed_MPVs(self, MPVs, noise_threshold=0.1, mip_window=(0.8, 1.2), twodim_hist_args=None):
         """
         Same full plotting pipeline as calibrate_and_analyze_grounddata, but using externally
         supplied per-scint MPVs (e.g. from a prior ground/temperature calibration)
@@ -450,19 +467,26 @@ class Detector_Analysis:
         curve is absent from every panel; everything else (rate spectra, MIP rescaling,
         amp + rate calibration, density + std heatmaps) is produced identically.
 
-        MPVs       : list of per-scint MPVs in mV, ordered scint1..scintN
-        mip_window : (lo, hi) MIP zoom window for the std heatmaps, replacing the
-                    fit-range auto-zoom (which needs a fit to derive).
+        MPVs             : list of per-scint MPVs in mV, ordered scint1..scintN
+        mip_window       : (lo, hi) MIP zoom window for the std heatmaps, replacing the
+                            fit-range auto-zoom (which needs a fit to derive).
+        twodim_hist_args : optional dict passed through to two_dimensional_histograms,
+                            e.g. {'col': 'MIP_ampcal', 'cbar_max': 300e-6}. If None, uses
+                            two_dimensional_histograms' own defaults (col='MIP', cbar_max=None).
         """
         self.noise_threshold = noise_threshold
         self.plot_rate_spectra_preview()
-        self._run_pipeline(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window)
+        self._run_pipeline(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window, twodim_hist_args=twodim_hist_args)
 
-    def _run_pipeline(self, MPVs=None, noise_threshold=0.1, mip_window=None):
+    def _run_pipeline(self, MPVs=None, noise_threshold=0.1, mip_window=None, twodim_hist_args=None):
         self.fit_and_normalize_spectra(MPVs=MPVs, noise_threshold=noise_threshold, no_fit=(MPVs is not None))
         self.build_master_df(MPVs=MPVs)
         self.calibration_comparison()
-        self.two_dimensional_histograms()
+        if twodim_hist_args is None:
+            twodim_hist_args = {}
+        col      = twodim_hist_args.get('col', 'MIP')
+        cbar_max = twodim_hist_args.get('cbar_max', None)
+        self.two_dimensional_histograms(col=col, cbar_max=cbar_max)
         self.MIPregion_two_dimensional_histograms(mip_window=mip_window)
 
     def build_master_df(self, tolerance=0.5, MPVs=None):
@@ -566,7 +590,7 @@ class Detector_Analysis:
         print(f"Master dataframe shape: {master.shape}")
         print(f"MPVs used: {mpv_per_scint}")
         print(f"Columns: {master.columns.tolist()}")
-        self._save_table(master, "master_df")
+        # self._save_table(master, "master_df")
         n = len(self.processor.fps)
         self._save_summary({
             "total_event_rate":        self.datalogger_df['Events CW1&2&3'].sum() / self.datalogger_df['Absolute Timer (S)'].max(),
@@ -1127,25 +1151,29 @@ class Detector_Analysis:
         # ── Additional: raw mV (not MIP-normalized) — mean vs spread ─────
         min_mv = min_mip * self.global_mean_mpv   # convert MIP noise threshold to mV so both plots filter consistently
         sub_mv = master[master["SiPM_scints_avg"] >= min_mv].copy()
-        sub_mv["_rate_weight"] = 1.0 / livetime
         print(f"[raw mV]   rows with SiPM_scints_avg >= {min_mv}: {len(sub_mv)}")
         print(f"           of those, finite SiPM_scints_std (y-axis): "
               f"{sub_mv['SiPM_scints_std'].notna().sum()}")
+        
+        # ── min/max mV across any/all scints in this filtered set ────────
+        scint_mv_cols = [f"SiPM_mV_{tag}_scint{i}" for i in range(1, n + 1)]
+        mv_min = sub_mv[scint_mv_cols].min().min()
+        mv_max = sub_mv[scint_mv_cols].max().max()
+        print(f"[raw mV]   per-scint mV range across {scint_mv_cols}: [{mv_min:.4g}, {mv_max:.4g}]")
+        
         fig_mv = px.density_heatmap(
             sub_mv,
             x="SiPM_scints_avg",
             y="SiPM_scints_std",
-            z="_rate_weight", histfunc="sum",
             nbinsx=50, nbinsy=50, width=800, height=600,
             color_continuous_scale="Inferno",
             labels={
                 "SiPM_scints_avg": f"Mean across {n} scints [mV]",
-                "SiPM_scints_std": f"Std across {n} scints [mV]",
-            },
+                "SiPM_scints_std": f"Std across {n} scints [mV]",},
             title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean (raw mV)<br>"
-                   f"(N={len(sub_mv)} events, rate-normalized by livetime = {livetime:.1f} s)"),
+                   f"(N={len(sub_mv)} events)"),
         )
-        fig_mv.update_coloraxes(colorbar_title="Normalized Counts")
+        fig_mv.update_coloraxes(colorbar_title="Counts")
         self._finish_plotly(fig_mv, "density_heatmap_mV")
 
     def MIPregion_two_dimensional_histograms(self, mip_window=None):
@@ -1513,77 +1541,7 @@ class Detector_Analysis:
             rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
             rows["noise_threshold"]    = d["noise_threshold"]
             rows.to_csv(path, index=False)
-            print(f"[saved] {path}")
-
-def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
-    """
-    Split a datalogger + scintillator set into the sections BETWEEN a list of
-    Absolute Timer marks (seconds). N marks → N-1 sections: section k spans
-    [time_marks[k], time_marks[k+1]). To keep the run start/end as their own
-    sections, include 0 and the max Absolute Timer in time_marks.
-
-    Args:
-        datalogger_fp : path to the datalogger CSV
-        scint_fps     : list of scintillator TXT paths
-        time_marks    : list of Absolute Timer cut points in seconds
-        labels        : optional list of section names (len == len(marks)-1);
-                        defaults to seg1, seg2, ...
-
-    Returns:
-        list of dicts, one per section:
-            {'label', 't_start', 't_end', 'datalogger', 'scints': [...]}
-    """
-    marks = sorted(float(t) for t in time_marks)
-    if len(marks) < 2:
-        raise ValueError("Need at least 2 time marks to define a section.")
-    if labels is not None and len(labels) != len(marks) - 1:
-        raise ValueError(f"Got {len(labels)} labels for {len(marks) - 1} sections.")
-
-    # Build Absolute Timer with the existing class.
-    dl = Datalogger_Processing(datalogger_fp, show_plots=False)
-    dl.process()
-    df = dl.df.copy()
-    df['Timer[S]'] = df['Absolute Timer (S)']        # flatten resets so each section reprocesses cleanly
-    df = df.drop(columns=[c for c in ['Absolute Timer (S)', 'Timer_rel'] if c in df.columns])
-
-    out_dir = os.path.dirname(datalogger_fp)
-    base    = os.path.splitext(os.path.basename(datalogger_fp))[0]
-
-    # Pre-read each scintillator once (3-line header + body), reuse across sections.
-    cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]','SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
-    scint_data = []
-    for fp in scint_fps:
-        with open(fp) as f:
-            header = [next(f) for _ in range(3)]
-        sdf = pd.read_csv(fp, sep='\t', comment='#', header=None, skiprows=3, names=cols, engine='python')
-        sbase = os.path.splitext(os.path.basename(fp))[0]
-        scint_data.append((sbase, header, sdf))
-
-    sections = []
-    for k in range(len(marks) - 1):
-        t0, t1 = marks[k], marks[k + 1]
-        tag = labels[k] if labels is not None else f"seg{k + 1}"
-        print(f"Section '{tag}': {t0:.0f}-{t1:.0f} s")
-
-        # Datalogger slice [t0, t1).
-        dl_out  = os.path.join(out_dir, f"{base}_{tag}.csv")
-        dl_mask = (df['Timer[S]'] >= t0) & (df['Timer[S]'] < t1)
-        df[dl_mask].to_csv(dl_out, index=False)
-
-        # Scintillator slices on the same window, keeping the 3-line header + tab format.
-        scint_out = []
-        for sbase, header, sdf in scint_data:
-            out    = os.path.join(out_dir, f"{sbase}_{tag}.txt")
-            s_mask = (sdf['Time[s]'] >= t0) & (sdf['Time[s]'] < t1)
-            with open(out, 'w') as f:
-                f.writelines(header)
-                sdf[s_mask].to_csv(f, sep='\t', header=False, index=False)
-            scint_out.append(out)
-
-        sections.append({'label': tag, 't_start': t0, 't_end': t1,
-                         'datalogger': dl_out, 'scints': scint_out})
-
-    return sections 
+            print(f"[saved] {path}") 
 
 # ================== Helper functions for saving data ==================
 def set_results_dir(name=None):

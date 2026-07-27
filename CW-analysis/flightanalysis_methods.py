@@ -11,10 +11,7 @@ import calibration_methods
 from calibration_methods import *
 import inspect
 
-
-
 # ========================= Helper functions =========================
-
 
 def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
     """
@@ -141,23 +138,96 @@ def analyze_flight_in_segments(
     split_by="time",
     time_marks=None,
     labels=None,
-    normalize_by_livetime=True,
     noise_threshold=0.1,
     mip_window=(0.8, 1.2),
     show_heatmap=True,
+    cbar_max=None,
     run_name="flight",
+    results_dir=None,
 ):
+    """
+    Split a flight datalogger + scintillator set into segments and run the
+    fixed-MPV analysis pipeline (analyze_calibrated_data_with_fixed_MPVs) on
+    each segment independently, saving every segment's outputs to its own
+    results_dir instead of showing them interactively.
+
+    Segmentation:
+        If time_marks is given, those are used directly as the Absolute
+        Timer cut points (n_seg = len(time_marks) - 1). Otherwise, marks are
+        auto-generated: n_segments+1 evenly-spaced points either in time
+        ("time") or in event quantiles ("events").
+
+    Per-segment analysis:
+        Each segment gets its own Datalogger_Processing → Scintillators_Processing
+        → Detector_Analysis chain, run with the externally supplied MPVs (no
+        Moyal fit per segment — see analyze_calibrated_data_with_fixed_MPVs).
+        two_dimensional_histograms always runs as part of that pipeline; when
+        show_heatmap=True, it's additionally pointed at the amplitude-calibrated
+        MIP columns (col='MIP_ampcal') so the ampcal heatmap is produced for
+        each segment, with cbar_max forwarded if given.
+
+    Args:
+        datalogger_fp : path to the full-flight datalogger CSV
+        scint_fps     : list of full-flight scintillator TXT paths
+        MPVs          : list of per-scint MPVs in mV (from a prior ground/temp
+                        calibration), ordered scint1..scintN — passed straight
+                        through to analyze_calibrated_data_with_fixed_MPVs
+        flight_df     : optional pre-processed datalogger dataframe (with
+                        Absolute Timer (S) already built); if None and
+                        time_marks is also None, it's built here so the
+                        auto-segmentation has something to slice on
+        n_segments    : number of segments to auto-generate when time_marks
+                        is not given
+        split_by      : "time" (evenly spaced in Absolute Timer) or "events"
+                        (evenly spaced in event-counts, meaning ); ignored if
+                        time_marks is given
+        time_marks    : explicit list of Absolute Timer cut points in seconds;
+                        overrides n_segments/split_by entirely
+        labels        : optional list of segment names (len == n_seg);
+                        defaults to seg1, seg2, ...
+        noise_threshold : MIP threshold separating noise from signal; forwarded
+                        to analyze_calibrated_data_with_fixed_MPVs
+        mip_window    : (lo, hi) MIP zoom window for the std heatmaps, since
+                        there's no Moyal fit here to auto-derive one from
+        show_heatmap  : if True, run two_dimensional_histograms on the
+                        amplitude-calibrated MIP columns (col='MIP_ampcal') for
+                        each segment; if False, two_dimensional_histograms still
+                        runs (it's always part of the pipeline) but on the
+                        default uncalibrated MIP columns instead
+        cbar_max      : optional fixed colorbar upper bound, forwarded to
+                        two_dimensional_histograms; only used when
+                        show_heatmap=True
+        run_name      : prefix used to build each segment's results_dir,
+                        e.g. "flight_seg1", "flight_seg2",
+        results_dir   : optional base directory under which each segment's
+                            subfolder is created, as os.path.join(results_dir,
+                            f"{run_name}_{label}"). If None, each segment's folder
+                            is created relative to the current working directory
+                            instead (old behavior: just f"{run_name}_{label}").
+
+    Returns:
+        dict keyed by segment label, each value:
+            {'t_start', 't_end', 'datalogger_df', 'processor', 'analysis'}
+        where 'analysis' is that segment's Detector_Analysis instance (so
+        master_df, mpv_per_scint, etc. are all still accessible afterward).
+    """
     # 1) cut points on the Absolute Timer
     if time_marks is None:
+        # if there are no time cuts/segments, and if the Datalogger_Processing class hasn't been run yet, run the class to build the absolute timer
         if flight_df is None:
             flight_df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
         t = np.asarray(flight_df["Absolute Timer (S)"], dtype=float)
         t_lo, t_hi = float(np.nanmin(t)), float(np.nanmax(t))
-        if split_by == "events":
-            marks = list(np.quantile(t, np.linspace(0.0, 1.0, n_segments + 1)))
+        # can either split by time (evenly spaced in seconds) or by events (evenly spaced in event count quantiles, meaning each segment has roughly the same number of events)
+        if split_by == "events": # if splitting by events, use np.quantile to get the cut points for the segments
+            marks = list(np.quantile(t, np.linspace(0.0, 1.0, n_segments + 1))) # np.linspace(0.0, 1.0, n_segments + 1) returns an array of evenly spaced
+                                                                                    # fractions/percentiles (e.g. 0, 0.25, 0.5, 0.75, 1.0 for n_segments=4);
+                                                                                    # np.quantile(t, ...) then returns the actual TIMER VALUES
+                                                                                    # at each of those percentiles — i.e. the cut points that divide t's
+                                                                                    # EVENTS into equal-count segments, rather than equal-duration ones
         else:  # "time"
-            marks = list(np.linspace(t_lo, t_hi, n_segments + 1))
-        marks[-1] = t_hi + 1e-6
+            marks = list(np.linspace(t_lo, t_hi, n_segments + 1)) # if splitting by time, use np.linspace to get the cut points for the segments
+        marks[-1] = t_hi + 1e-6        # split_by_time_marks uses [t0, t1); keep the final row
     else:
         marks = sorted(float(x) for x in time_marks)
 
@@ -174,16 +244,14 @@ def analyze_flight_in_segments(
             _c = int(((_tt >= marks[k]) & (_tt < marks[k + 1])).sum())
             print(f"[DEBUG]   {labels[k]}: {marks[k]:.0f}-{marks[k+1]:.0f} s  datalogger rows = {_c}")
 
-    # 2) write windowed datalogger + scint files for each segment
+    # 2) write windowed datalogger + scint files for each segment (tested helper)
     sections = split_by_time_marks(datalogger_fp, scint_fps, marks, labels=labels)
 
     # DEBUG: confirm split_by_time_marks actually produced n_seg sections
     print(f"[DEBUG] split_by_time_marks returned {len(sections)} section(s): "
           f"{[s['label'] for s in sections]}")
 
-    hm_params = inspect.signature(plot_density_heatmap_ampcal).parameters
-
-    # 3) run the fixed-MPV pipeline + ampcal heatmap per segment
+    # 3) run the fixed-MPV pipeline per segment, saving to its own results_dir
     results = {}
     for sec in sections:
         lbl = sec["label"]
@@ -191,11 +259,14 @@ def analyze_flight_in_segments(
         print(f"SEGMENT {lbl}:  {sec['t_start']:.0f}–{sec['t_end']:.0f} s")
         print("=" * 78)
 
-        set_results_dir(f"{run_name}_{lbl}")
+        # instance-level results_dir (passed to Detector_Analysis below) replaces
+        # the old global set_results_dir() call — each segment gets its own folder
+        seg_results_dir = (os.path.join(results_dir, f"{run_name}_{lbl}")
+                            if results_dir is not None
+                            else f"{run_name}_{lbl}")
 
         # DEBUG: scint coverage in this window (rows actually written to each seg file)
-        _cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]',
-                 'SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
+        _cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]', 'SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
         for _fp in sec["scints"]:
             _sdf = pd.read_csv(_fp, sep='\t', comment='#', header=None,
                                skiprows=3, names=_cols, engine='python')
@@ -206,13 +277,27 @@ def analyze_flight_in_segments(
                   f"{(_ts.max() if len(_sdf) else float('nan')):.0f}")
 
         seg_df = Datalogger_Processing(sec["datalogger"], show_plots=True).process()
-        print(f"[DEBUG]   seg_df rows = {len(seg_df)}")  # DEBUG
+        print(f"[DEBUG]   seg_df rows = {len(seg_df)}")
 
-        proc   = Scintillators_Processing(sec["scints"], seg_df)
-        ana    = Detector_Analysis(proc, seg_df)
-        ana.analyze_calibrated_data_with_fixed_MPVs(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window)
+        proc = Scintillators_Processing(sec["scints"], seg_df, results_dir=seg_results_dir)
+        ana  = Detector_Analysis(proc, seg_df, results_dir=seg_results_dir)
 
-        # DEBUG: how many points the heatmap will actually plot
+        # Build the two_dimensional_histograms args: ampcal columns when
+        # show_heatmap=True (mirrors what the old standalone
+        # plot_density_heatmap_ampcal call used to do), plain defaults otherwise.
+        # two_dimensional_histograms always runs as part of the pipeline either way.
+        twodim_hist_args = {'col': 'MIP_ampcal'} if show_heatmap else None
+        if show_heatmap and cbar_max is not None: # add cbar_max to two dimensional plotting dictionary
+            twodim_hist_args['cbar_max'] = cbar_max
+
+        ana.analyze_calibrated_data_with_fixed_MPVs(
+            MPVs=MPVs,
+            noise_threshold=noise_threshold,
+            mip_window=mip_window,
+            twodim_hist_args=twodim_hist_args,
+        )
+
+        # DEBUG: how many points the ampcal heatmap actually plotted
         _md = ana.master_df
         _avg = _md["SiPM_scints_avg_MIP_ampcal"]
         print(f"[DEBUG]   master_df rows={len(_md)}  "
@@ -222,77 +307,9 @@ def analyze_flight_in_segments(
             print(f"[DEBUG]   total_livetime_scint{i}_s = "
                   f"{getattr(proc, f'total_livetime_scint{i}_s'):.2f}")
 
-        if show_heatmap:
-            kw = {"normalize_by_livetime": normalize_by_livetime}
-            for cand in ("label", "title_suffix"):
-                if cand in hm_params:
-                    kw[cand] = lbl
-                    break
-            plot_density_heatmap_ampcal(ana, **kw)
-
         results[lbl] = {
             "t_start": sec["t_start"], "t_end": sec["t_end"],
             "datalogger_df": seg_df, "processor": proc, "analysis": ana,
         }
 
     return results
-
-
-
-
-
-# ========================= Isolate flight in full files =========================
-
-set_results_dir("may31flight_overview")
-
-datalogger_csv_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/May_31st_Flight/AHD011 copy.csv' # @param {type:"string"}
-top_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/May_31st_Flight/left_AxLab_M_038.txt' # @param {type:"string"}
-mid_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/May_31st_Flight/middle_AxLab_M_037 copy.txt' # @param {type:"string"}
-bot_scint_fp = '/Users/emmamartignoni/Desktop/HERA-Research/Data/May_31st_Flight/right_AxLab_M_038 copy.txt' # @param {type:"string"}
-
-# Original / full flight data
-og_flight_df = Datalogger_Processing(datalogger_csv_fp, show_plots=True).process()
-
-# Trimming datalogger and scintillator files based on timestamp of altitude where the balloon returns to ground
-dl_fp, scint_fps_trimmed = trim_to_flight(datalogger_csv_fp, [top_scint_fp, mid_scint_fp, bot_scint_fp])
-
-# Re-run datalogger to make new, trimmed version of flight
-trimmed_flight_df = Datalogger_Processing(dl_fp, show_plots=True).process()
-
-
-# plot Altitude vs time to check my work
-fig_alt = plt.figure(figsize=(10, 6))
-# plt.plot(og_flight_df['Absolute Timer (S)'], og_flight_df['Altitude[m]']*3.281, label='CW1&2&3', color='blue')
-# plt.xlabel('Timer')
-# plt.ylabel('Altitude [ft]')
-plt.plot(trimmed_flight_df['Absolute Timer (S)'], trimmed_flight_df['Altitude[m]']*3.281, label='Flight', color='blue')
-plt.xlabel('Timer')
-plt.ylabel('Altitude [ft]')
-plt.legend()
-finish_mpl(fig_alt, "altitude_check")
-print(f"Max altitude of original launch data: {og_flight_df['Altitude[m]'].max()*3.281} ft")
-print(f"Max altitude (trimmed), should be same as max altitude of original launch data: {trimmed_flight_df['Altitude[m]'].max()*3.281} ft")
-print(f"The first few rows of the new datalogger dataframe:\n{trimmed_flight_df.head()}")
-
-
-
-# ========================= Split flight and background =========================
-
-segments = analyze_flight_in_segments(
-    dl_fp,                          # the trimmed datalogger CSV from trim_to_flight
-    scint_fps_trimmed,
-    MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
-    flight_df=trimmed_flight_df,    # used only to locate the segment boundaries
-    n_segments=4,
-    split_by="time",                # or "events"
-    run_name="may31flight",
-)
-
-# grab any segment's analysis object for further work (Tcal columns, etc.)
-analysis_seg2 = segments["seg2"]["analysis"]
-
-
-
-
-
-
