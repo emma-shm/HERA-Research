@@ -85,7 +85,7 @@ plt.plot(df['packet_number'], data1[15], label='CH16', color='purple', ls=':')
 plt.xlabel('Packet')
 plt.ylabel('Counts')
 plt.legend()
-plt.savefig('count_vs_time.png')
+plt.savefig(output_dir + '/count_vs_time.png')
 
 fig_cum = plt.figure(figsize=(15, 10))
 plt.title("Cumulative Count versus Time")
@@ -109,7 +109,7 @@ plt.plot(df['packet_number'], data2[15], label='CH16', color='purple', ls=':')
 plt.xlabel('Packet')
 plt.ylabel('Counts')
 plt.legend()
-plt.savefig('cumulative_count_vs_time.png')
+plt.savefig(output_dir + '/cumulative_count_vs_time.png')
 
 
 
@@ -147,7 +147,7 @@ axes1[1,1].plot(df['packet_number'], data1[15], label='CH16', color='purple')
 axes1[1,1].legend()
 for ax in axes1.flat:
     add_time_marks(ax)
-plt.savefig('layer_graphs.png')
+plt.savefig(output_dir + '/layer_graphs.png')
 
 # ======== 2x2 subplots where each subplot shows the 4 channels in each COLUMN ========
 fig_col, axes2 = plt.subplots(2, 2, figsize=(15,10))
@@ -181,7 +181,7 @@ axes2[1,1].plot(df['packet_number'], data1[15], label='CH16', color='purple')
 axes2[1,1].legend()
 for ax in axes2.flat:
     add_time_marks(ax)
-plt.savefig('column_graphs.png')
+plt.savefig(output_dir + '/column_graphs.png')
 
 
 
@@ -218,7 +218,7 @@ axes1[1,1].plot(df['packet_number'], data2[15], label='CH16', color='purple')
 axes1[1,1].legend()
 for ax in axes1.flat:
     add_time_marks(ax)
-plt.savefig('layer_graphs_cumulative.png')
+plt.savefig(output_dir + '/layer_graphs_cumulative.png')
 
 
 # ======== 2x2 subplots where each subplot shows the 4 channels in each COLUMN (cumulative) ========
@@ -253,7 +253,7 @@ axes2[1,1].plot(df['packet_number'], data2[15], label='CH16', color='purple')
 axes2[1,1].legend()
 for ax in axes2.flat:
     add_time_marks(ax)
-plt.savefig('column_graphs_cumulative.png')
+plt.savefig(output_dir + '/column_graphs_cumulative.png')
 
 plt.show()
 

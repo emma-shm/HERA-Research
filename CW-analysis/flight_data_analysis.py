@@ -209,10 +209,8 @@ def analyze_flight_in_segments(
         print(f"[DEBUG]   seg_df rows = {len(seg_df)}")  # DEBUG
 
         proc   = Scintillators_Processing(sec["scints"], seg_df)
-        ana    = CW_Analysis(proc, seg_df)
-        ana.rate_spectra_with_fixed_MPVs(
-            MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window
-        )
+        ana    = Detector_Analysis(proc, seg_df)
+        ana.analyze_calibrated_data_with_fixed_MPVs(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window)
 
         # DEBUG: how many points the heatmap will actually plot
         _md = ana.master_df

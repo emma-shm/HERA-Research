@@ -1,3 +1,8 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
 """
 HASP-data-processing.py — pre-processing of two SiPM teensy CSVs into a unified
 per-event DataFrame for downstream coincidence-spectrum analysis.
@@ -11,14 +16,14 @@ Steps:
   6. Build a unified DataFrame plus a drift-diagnostic histogram.
 """
 
-import os
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
+# # === File paths for fake data ============================================
+# teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_2hr.csv'
+# teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_2hr.csv'
 
-# === File paths (edit per run) ============================================
-teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_2hr.csv'
-teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_2hr.csv'
+
+# === File paths for real data ============================================
+teensy1_fp = '/Users/emmamartignoni/Downloads/SiPM1Data1.csv'
+teensy2_fp = '/Users/emmamartignoni/Downloads/SiPM2Data1.csv'
 
 # Load raw teensy CSVs
 df1 = pd.read_csv(teensy1_fp)
@@ -68,11 +73,74 @@ COINCIDENCE_GROUPS = {
 
 # All plots get saved to ./results/ relative to wherever this script is run.
 # exist_ok=True so re-runs don't crash if the folder is already there.
-RESULTS_DIR = 'results'
+RESULTS_DIR = 'sd_data_processing_results'
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# ======== RAW COUNT DATA SUBPLOTS, BEFORE PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES ===================================
+# Diagnostic plots of each teensy's raw trigger counts vs time, organized by column and also layer
 
-# === Config ===============================================================
+TEST_LABEL = 'test1'     # goes in the filename to distinguish runs on the same date
+
+# Layers are consecutive blocks of 4: Layer 1 = 1-4, Layer 2 = 5-8, etc.
+# range(4n-3, 4n+1) generates exactly that block for layer n.
+LAYER_GROUPS  = {f'Layer {n}': list(range(4*n - 3, 4*n + 1)) for n in range(1, 5)}
+
+# Columns are the physical vertical stacks, already defined up top in
+# COINCIDENCE_GROUPS ('col1': [1,5,9,13], ...), enumerate(..., start=1) just renames the keys
+# 'col1' -> 'Col 1' for display.
+COLUMN_GROUPS = {f'Col {n}': trigs for n, trigs in enumerate(COINCIDENCE_GROUPS.values(), start=1)}
+
+# One color per position within a group, applied in order. Because both groupings
+# draw 4 channels per panel, the same color always means "first/second/third/fourth
+# channel in this group" on every plot.
+COLORS = ['tomato', 'skyblue', 'forestgreen', 'purple']
+
+RUN_DATE   = '2026-07-23'   # EDIT PER RUN — can't derive it from utc_time while those are 0
+TEST_LABEL = 'test1'
+
+# Outer loop: one pass per board. df1/df2 are still the raw per-teensy frames here.
+for df_raw, teensy_n in ((df1, 1), (df2, 2)): # in each loop, df_raw is the raw dataframe for that teensy, and teensy_n is either 1 or 2
+
+    # Rows arrive slightly out of order (the first few micros values go
+    # 1613863, 1613820, 1613982), so sort before any cumulative sum — otherwise
+    # the staircase would step backwards in time.
+    d = df_raw.sort_values('microseconds_since_boot')
+
+    # Board's own boot counter, measured from this board's first event so both
+    # teensies start at 0. Microseconds -> minutes.
+    t_min = (d['microseconds_since_boot'] - d['microseconds_since_boot'].min()) / 1e6 / 60.0 # divide by 1e6 to convert microseconds to seconds, then divide by 60 to convert seconds to minutes
+
+    # sipm_NN_trigger is a per-event 0/1 flag, so a running sum down the column is
+    # a running total of how many times that channel has fired so far. The line
+    # steps up by 1 at each event the channel took part in and stays flat
+    # otherwise — slope is the count rate.
+    cumulative = d[[f'sipm_{nn:02d}_trigger' for nn in range(1, 17)]].cumsum()
+
+    # --- one figure per grouping ------------------------------------------
+    for groups, kind, suptitle in ((LAYER_GROUPS,  'layer',  'Layer Graphs'),
+                                   (COLUMN_GROUPS, 'column', 'Column Graphs')):
+
+        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig.suptitle(f'{suptitle} — Teensy {teensy_n}, {RUN_DATE} {TEST_LABEL}')
+
+        # axes.flat flattens the 2x2 array so zipping against the 4 groups fills
+        # panels left-to-right, top-to-bottom.
+        for ax, (label, trigs) in zip(axes.flat, groups.items()):
+            ax.set_title(label)
+            for colour, nn in zip(COLORS, trigs):
+                ax.plot(t_min, cumulative[f'sipm_{nn:02d}_trigger'], label=f'CH{nn}', color=colour)
+            ax.legend()
+            ax.set_xlabel('Time since boot (min)')
+            ax.set_ylabel('Cumulative counts')
+
+        fig.savefig(os.path.join(RESULTS_DIR,
+                                f'{RUN_DATE}_teensy{teensy_n}_{TEST_LABEL}_{kind}_graphs.png'))
+
+plt.show()
+
+
+
+# ======== PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES ===================================
 # Max allowed time gap between matched events on the two teensies.
 # Units = whatever trigger_NN_signal_time uses (TBD; assumed seconds).
 MERGE_TOLERANCE = 0.1 # PLACEHOLDER — tune once you've seen the real drift distribution.
@@ -371,5 +439,48 @@ for col_name, trigger_nums in COINCIDENCE_GROUPS.items():                  # pri
 # event_time_unix_s, event_time_unix_s_t2, _t1_orig_idx, _t2_orig_idx, utc_time_t1, utc_time_t2, microseconds_since_boot_t1, microseconds_since_boot_t2, sipm_01_trigger_t1, sipm_02_trigger_t1, sipm_03_trigger_t1, sipm_04_trigger_t1, sipm_05_trigger_t1, sipm_06_trigger_t1, sipm_07_trigger_t1, sipm_08_trigger_t1, sipm_09_trigger_t1, sipm_10_trigger_t1, sipm_11_trigger_t1, sipm_12_trigger_t1, sipm_13_trigger_t1, sipm_14_trigger_t1, sipm_15_trigger_t1, sipm_16_trigger, trigger_01_dead_time_t1, trigger_02_dead_time_t1, trigger_03_dead_time_t1, trigger_04_dead_time_t1, trigger_05_dead_time_t1, trigger_06_dead_time_t1, trigger_07_dead_time_t1, trigger_08_dead_time_t1, trigger_09_dead_time_t1, trigger_10_dead_time_t1, trigger_11_dead_time_t1, trigger_12_dead_time_t1, trigger_13_dead_time_t1, trigger_14_dead_time_t1, trigger_15_dead_time_t1, trigger_16_dead_time_t1, trigger_01_dead_time_t2, trigger_02_dead_time_t2, trigger_03_dead_time_t2, trigger_04_dead_time_t2, trigger_05_dead_time_t2, trigger_06_dead_time_t2, trigger_07_dead_time_t2, trigger_08_dead_time_t2, trigger_09_dead_time_t2, trigger_10_dead_time_t2, trigger_11_dead_time_t2, trigger_12_dead_time_t2, trigger_13_dead_time_t2, trigger_14_dead_time_t2, trigger_15_dead_time_t2, trigger_16_dead_time_t2, sipm_01_adc, sipm_02_adc, sipm_03_adc, sipm_04_adc, sipm_05_adc, sipm_06_adc, sipm_07_adc, sipm_08_adc, sipm_09_adc, sipm_10_adc, sipm_11_adc, sipm_12_adc, sipm_13_adc, sipm_14_adc, sipm_15_adc, sipm_16_adc, sipm_01_threshold, sipm_02_threshold, sipm_03_threshold, sipm_04_threshold, sipm_05_threshold, sipm_06_threshold, sipm_07_threshold, sipm_08_threshold, sipm_09_threshold, sipm_10_threshold, sipm_11_threshold, sipm_12_threshold, sipm_13_threshold, sipm_14_threshold, sipm_15_threshold, sipm_16_threshold, cpu_temperature_t1, cpu_temperature_t2, match_status, col1_CW_1&5, col1_CW_1&5&9, col1_CW_1&5&9&13, col2_CW_2&6, col2_CW_2&6&10, col2_CW_2&6&10&14, col3_CW_3&7, col3_CW_3&7&11, col3_CW_3&7&11&15, col4_CW_4&8, col4_CW_4&8&12, col4_CW_4&8&12&16, delta_col1_CW_1&5, delta_col1_CW_1&5&9, delta_col1_CW_1&5&9&13, delta_col2_CW_2&6, delta_col2_CW_2&6&10, delta_col2_CW_2&6&10&14, delta_col3_CW_3&7, delta_col3_CW_3&7&11, delta_col3_CW_3&7&11&15, delta_col4_CW_4&8, delta_col4_CW_4&8&12, delta_col4_CW_4&8&12&16
 
 
+# DIAGNOSTIC PLOTTING
+# === Per-channel counts vs time ===========================================
+TIME_BIN_S = 60          # bin width for the count-vs-time plots
+
+LAYER_GROUPS  = {f'Layer {n}': list(range(4*n - 3, 4*n + 1)) for n in range(1, 5)}
+COLUMN_GROUPS = {f'Col {n}': trigs for n, (name, trigs)
+                 in enumerate(COINCIDENCE_GROUPS.items(), start=1)}
+COLORS = ['tomato', 'skyblue', 'forestgreen', 'purple']
+
+plot_rows = merged[merged['match_status'].isin(['matched', 'pattern_mismatch'])]
+run_start = plot_rows['event_time_unix_s'].min()
+bin_idx = ((plot_rows['event_time_unix_s'] - run_start) // TIME_BIN_S).astype(int)
+
+# counts[nn] = how many times channel nn fired in each time bin
+counts = pd.DataFrame({nn: plot_rows[f'sipm_{nn:02d}_trigger_t1'].groupby(bin_idx).sum()
+                       for nn in range(1, 17)})
+counts = counts.reindex(range(bin_idx.max() + 1), fill_value=0)
+bin_mid_s = counts.index * TIME_BIN_S + TIME_BIN_S / 2
+
+
+def plot_grid(groups, cumulative, fname, suptitle):
+    """2x2 grid, one panel per group, one line per channel in that group."""
+    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+    for ax, (label, trigs) in zip(axes.flat, groups.items()):
+        for colour, nn in zip(COLORS, trigs):
+            y = counts[nn].cumsum() if cumulative else counts[nn]
+            ax.plot(bin_mid_s, y, color=colour, label=f'CH{nn}')
+        ax.set_title(label)
+        ax.legend(fontsize=8)
+    for ax in axes[1, :]:
+        ax.set_xlabel('Time since run start (s)')
+    for ax in axes[:, 0]:
+        ax.set_ylabel('Cumulative counts' if cumulative else f'Counts per {TIME_BIN_S}s')
+    fig.suptitle(suptitle)
+    fig.tight_layout()
+    fig.savefig(os.path.join(RESULTS_DIR, fname), dpi=150)
+
+
+plot_grid(LAYER_GROUPS,  False, 'layer_counts.png',             f'Counts per {TIME_BIN_S}s by layer')
+plot_grid(LAYER_GROUPS,  True,  'layer_counts_cumulative.png',  'Cumulative counts by layer')
+plot_grid(COLUMN_GROUPS, False, 'column_counts.png',            f'Counts per {TIME_BIN_S}s by column')
+plot_grid(COLUMN_GROUPS, True,  'column_counts_cumulative.png', 'Cumulative counts by column')
+plt.show()
 
 
