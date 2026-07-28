@@ -6,147 +6,9 @@ import os
 from scipy.optimize import curve_fit
 
 
-def build_absolute_timer(df, time_col='microseconds_since_boot', reset_threshold=-10_000_000):
-    '''
-    Detects timer resets in the given time column, builds a continuous
-    absolute timer by chaining segments end-to-end, and returns df with
-    a new absolute timer column appended.
-
-    Args:
-        df:                pd.DataFrame containing the time column
-        time_col:          string name of the column holding timer values
-        reset_threshold:   a drop below this value (default -10_000_000 us)
-                        is treated as a timer reset
-
-    ReturnsE
-        df with new 'Absolute Timer (us)' column added
-    '''
-
-    df_sorted = df.copy().sort_index().reset_index(drop=True)                      # make sure rows are in original order + give clean 0-based index
-
-    time_col = str(time_col)                                            # ensure time_col is a string (in case it was passed as something else)
-
-    reset_mask = df_sorted[time_col].diff() < reset_threshold                                # .diff() computes row-to-row differences; this creates a boolean mask that's True wherever the time decreased by more than 3 seconds (negative value indicates a reset/jump backward)
-
-    new_segment_starts = [0] + (reset_mask[reset_mask].index).tolist()   # list of row numbers where each new segment begins: 0 + (index of each True + 1 to point to first row of next segment)
-    print(f"Detected {len(new_segment_starts)-1} separate timer reset(s) at rows {new_segment_starts}")
-
-    timerreset_segments = []                                                            # empty list that will store one DataFrame per continuous run
-
-    for i in range(len(new_segment_starts)):                                 # loop over each detected starting point
-        start = new_segment_starts[i]                                        # determine starting row index of current segment; store in "start"
-        end = new_segment_starts[i+1] if i+1 < len(new_segment_starts) else None   # ending row = start of next segment, or None (means go to end of DataFrame)
-        seg = df_sorted.iloc[start:end].copy()                                  # slice out this segment and make independent copy; iloc
-        seg['Timer_rel'] = seg[time_col] - seg[time_col].iloc[0]             # add relative time column that starts at ~0 for this run
-        timerreset_segments.append(seg)                                                 # store this segment in the list
-
-    for i, seg in enumerate(timerreset_segments, 1):
-        t_min = seg[time_col].min()
-        t_max = seg[time_col].max()
-        nrows = len(seg)
-        print(f"  Run {i:2d}: {nrows:5d} rows, timer {t_min:6.0f} → {t_max:6.0f} s")
-
-    absolute_timers = []
-    previous_end = 0.0
-
-    for i, seg in enumerate(timerreset_segments):
-        current_timers = seg[time_col].values
-
-        if len(current_timers) == 0:
-            continue
-
-        absolute_this_segment = current_timers + previous_end
-
-        absolute_timers.extend(absolute_this_segment)
-
-        previous_end = absolute_this_segment[-1]
-
-    df['Absolute Timer (us)'] = absolute_timers
-
-    return df
-
-
-# COINCIDENCE_GROUPS = {
-#     'col1': [1, 5, 9, 13],
-#     'col2': [2, 6, 10, 14],
-#     'col3': [3, 7, 11, 15],
-#     'col4': [4, 8, 12, 16],}
-# and the merged dataframe should have ADC columns like sipm_01_adc ... sipm_16_adc, so the grouping for the columns and plotting can be done using this logic
-
-def plot_ADC_histograms(df, coincidence_groups, bins=100):
-    n_layers = 4
-    columns = len(coincidence_groups) # number of physical columns, one per key in coincidence_groups
-
-    for ch in range(1, columns + 1): # looping over each physical column (col1, col2, col3, col4)
-
-        col_name = f'col{ch}'
-        trigger_nums = coincidence_groups[col_name]
-        all_events = pd.concat([df[f'sipm_{(layer - 1) * 4 + ch:02d}_adc'] for layer in range(1, n_layers + 1)]).dropna() # concatenate ADC values from all layers in this column
-
-        palette = ['blue', 'orange', 'green', 'red', 'purple', 'brown']
-        data    = [all_events]
-        labels  = ['All events']
-        colors  = [palette[0]]
-
-        # One entry per coincidence order (CW12, CW123, ..., up to CW1...N)
-        fold_names = {2: 'Double', 3: 'Triple', 4: 'Quadruple', 5: 'Quintuple', 6: 'Sextuple'}
-        for idx, order in enumerate(range(2, len(trigger_nums) + 1), start=1):
-            label = '&'.join(str(n) for n in trigger_nums[:order])
-            delta_col = f'delta_{col_name}_CW_{label}'
-            events_k = pd.concat([
-                df.loc[df[delta_col] > 0, f'sipm_{(layer - 1) * 4 + ch:02d}_adc']
-                for layer in range(1, n_layers + 1)
-            ]).dropna()
-            fold = fold_names.get(order, f'{order}-fold')
-            data.append(events_k) # add this coincidence level's ADC values to the list to be plotted
-            labels.append(f'{fold} coincidence events ({col_name}_CW_{label})')
-            colors.append(palette[idx % len(palette)])
-
-        fig, ax = plt.subplots(figsize=(8, 4))
-
-        for dataset, color, label in zip(data, colors, labels):
-            ax.hist(dataset, bins=bins, color=color, edgecolor='black', alpha=0.5, label=label)
-
-        ax.set_xlabel('ADC [0-4095]', fontsize=12)
-        ax.set_ylabel('Count', fontsize=12)
-        ax.set_title(f'ADC Distribution — Channel {ch}', fontsize=12)
-        ax.set_yscale('log')
-        ax.legend(fontsize=11)
-        plt.tight_layout()
-        plt.show()
-
-
-    # def apply_deadtime_correction(self):
-    #     """
-    #     Computes deadtime-corrected per-event livetime for each scintillator,
-    #     using the same approach as getCosmicWatch() in the reference script.
-
-    #     For each event row, livetime = (time elapsed since last event) - (deadtime accumulated since last event)
-    #     This is then attached to the scintillator DataFrame as a column before merging.
-
-    #     Args:
-    #         i: scintillator index (1-based)
-
-    #     Returns:
-    #         pd.Series of deadtime-corrected livetime values, aligned to scint_i's index
-    #     """
-    #     scint_df = getattr(self, f'scint_{i}')
-    #     time  = s['Time[s]'].values
-    #     deadt = scint_df['Deadtime[s]'].values
-
-    #     # delta deadtime per event
-    #     event_deadt_s    = np.diff(np.append([0], deadt))
-    #     event_livetime_s = np.diff(np.append([0], time)) - event_deadt_s
-
-    #     # clip negatives — can occur at file boundaries or timer resets
-    #     event_livetime_s = event_livetime_s.clip(min=0)
-
-    #     return pd.Series(event_livetime_s, index=scint_df.index,
-    #                     name=f'livetime_scint{i}[s]')
-
-class CW_Analysis:
-    def __init__(self, processor):
-        self.processor = processor
+class Detector_Analysis:
+    def __init__(self, merged_df):
+        self.data = merged_df
         self.moyal_fit_ranges = None
         self.stored = None
         self.results_dir = os.path.join(os.getcwd(), 'analysis_results')
@@ -163,7 +25,7 @@ class CW_Analysis:
             trigger_col  = f'sipm_{i:02d}_trigger'
             deadtime_col = f'trigger_{i:02d}_dead_time_t1'
 
-            scint_df = self.processor.df[self.df[trigger_col] == 1]
+            scint_df = self.data[self.df[trigger_col] == 1]
 
             time  = scint_df['Absolute Timer (us)'].values / 1e6   # to seconds
             deadt = scint_df[deadtime_col].values / 1e6            # to seconds
@@ -623,3 +485,141 @@ class CW_Analysis:
             )
             fig3.write_image(os.path.join(self.results_dir, f'{col_name}_heatmap_mip_avg.png'))
             fig3.show()
+
+def build_absolute_timer(df, time_col='microseconds_since_boot', reset_threshold=-10_000_000):
+    '''
+    Detects timer resets in the given time column, builds a continuous
+    absolute timer by chaining segments end-to-end, and returns df with
+    a new absolute timer column appended.
+
+    Args:
+        df:                pd.DataFrame containing the time column
+        time_col:          string name of the column holding timer values
+        reset_threshold:   a drop below this value (default -10_000_000 us)
+                        is treated as a timer reset
+
+    ReturnsE
+        df with new 'Absolute Timer (us)' column added
+    '''
+
+    df_sorted = df.copy().sort_index().reset_index(drop=True)                      # make sure rows are in original order + give clean 0-based index
+
+    time_col = str(time_col)                                            # ensure time_col is a string (in case it was passed as something else)
+
+    reset_mask = df_sorted[time_col].diff() < reset_threshold                                # .diff() computes row-to-row differences; this creates a boolean mask that's True wherever the time decreased by more than 3 seconds (negative value indicates a reset/jump backward)
+
+    new_segment_starts = [0] + (reset_mask[reset_mask].index).tolist()   # list of row numbers where each new segment begins: 0 + (index of each True + 1 to point to first row of next segment)
+    print(f"Detected {len(new_segment_starts)-1} separate timer reset(s) at rows {new_segment_starts}")
+
+    timerreset_segments = []                                                            # empty list that will store one DataFrame per continuous run
+
+    for i in range(len(new_segment_starts)):                                 # loop over each detected starting point
+        start = new_segment_starts[i]                                        # determine starting row index of current segment; store in "start"
+        end = new_segment_starts[i+1] if i+1 < len(new_segment_starts) else None   # ending row = start of next segment, or None (means go to end of DataFrame)
+        seg = df_sorted.iloc[start:end].copy()                                  # slice out this segment and make independent copy; iloc
+        seg['Timer_rel'] = seg[time_col] - seg[time_col].iloc[0]             # add relative time column that starts at ~0 for this run
+        timerreset_segments.append(seg)                                                 # store this segment in the list
+
+    for i, seg in enumerate(timerreset_segments, 1):
+        t_min = seg[time_col].min()
+        t_max = seg[time_col].max()
+        nrows = len(seg)
+        print(f"  Run {i:2d}: {nrows:5d} rows, timer {t_min:6.0f} → {t_max:6.0f} s")
+
+    absolute_timers = []
+    previous_end = 0.0
+
+    for i, seg in enumerate(timerreset_segments):
+        current_timers = seg[time_col].values
+
+        if len(current_timers) == 0:
+            continue
+
+        absolute_this_segment = current_timers + previous_end
+
+        absolute_timers.extend(absolute_this_segment)
+
+        previous_end = absolute_this_segment[-1]
+
+    df['Absolute Timer (us)'] = absolute_timers
+
+    return df
+
+
+# COINCIDENCE_GROUPS = {
+#     'col1': [1, 5, 9, 13],
+#     'col2': [2, 6, 10, 14],
+#     'col3': [3, 7, 11, 15],
+#     'col4': [4, 8, 12, 16],}
+# and the merged dataframe should have ADC columns like sipm_01_adc ... sipm_16_adc, so the grouping for the columns and plotting can be done using this logic
+
+def plot_ADC_histograms(df, coincidence_groups, bins=100):
+    n_layers = 4
+    columns = len(coincidence_groups) # number of physical columns, one per key in coincidence_groups
+
+    for ch in range(1, columns + 1): # looping over each physical column (col1, col2, col3, col4)
+
+        col_name = f'col{ch}'
+        trigger_nums = coincidence_groups[col_name]
+        all_events = pd.concat([df[f'sipm_{(layer - 1) * 4 + ch:02d}_adc'] for layer in range(1, n_layers + 1)]).dropna() # concatenate ADC values from all layers in this column
+
+        palette = ['blue', 'orange', 'green', 'red', 'purple', 'brown']
+        data    = [all_events]
+        labels  = ['All events']
+        colors  = [palette[0]]
+
+        # One entry per coincidence order (CW12, CW123, ..., up to CW1...N)
+        fold_names = {2: 'Double', 3: 'Triple', 4: 'Quadruple', 5: 'Quintuple', 6: 'Sextuple'}
+        for idx, order in enumerate(range(2, len(trigger_nums) + 1), start=1):
+            label = '&'.join(str(n) for n in trigger_nums[:order])
+            delta_col = f'delta_{col_name}_CW_{label}'
+            events_k = pd.concat([
+                df.loc[df[delta_col] > 0, f'sipm_{(layer - 1) * 4 + ch:02d}_adc']
+                for layer in range(1, n_layers + 1)
+            ]).dropna()
+            fold = fold_names.get(order, f'{order}-fold')
+            data.append(events_k) # add this coincidence level's ADC values to the list to be plotted
+            labels.append(f'{fold} coincidence events ({col_name}_CW_{label})')
+            colors.append(palette[idx % len(palette)])
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+
+        for dataset, color, label in zip(data, colors, labels):
+            ax.hist(dataset, bins=bins, color=color, edgecolor='black', alpha=0.5, label=label)
+
+        ax.set_xlabel('ADC [0-4095]', fontsize=12)
+        ax.set_ylabel('Count', fontsize=12)
+        ax.set_title(f'ADC Distribution — Channel {ch}', fontsize=12)
+        ax.set_yscale('log')
+        ax.legend(fontsize=11)
+        plt.tight_layout()
+        plt.show()
+
+
+    # def apply_deadtime_correction(self):
+    #     """
+    #     Computes deadtime-corrected per-event livetime for each scintillator,
+    #     using the same approach as getCosmicWatch() in the reference script.
+
+    #     For each event row, livetime = (time elapsed since last event) - (deadtime accumulated since last event)
+    #     This is then attached to the scintillator DataFrame as a column before merging.
+
+    #     Args:
+    #         i: scintillator index (1-based)
+
+    #     Returns:
+    #         pd.Series of deadtime-corrected livetime values, aligned to scint_i's index
+    #     """
+    #     scint_df = getattr(self, f'scint_{i}')
+    #     time  = s['Time[s]'].values
+    #     deadt = scint_df['Deadtime[s]'].values
+
+    #     # delta deadtime per event
+    #     event_deadt_s    = np.diff(np.append([0], deadt))
+    #     event_livetime_s = np.diff(np.append([0], time)) - event_deadt_s
+
+    #     # clip negatives — can occur at file boundaries or timer resets
+    #     event_livetime_s = event_livetime_s.clip(min=0)
+
+    #     return pd.Series(event_livetime_s, index=scint_df.index,
+    #                     name=f'livetime_scint{i}[s]')
