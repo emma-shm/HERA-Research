@@ -14,6 +14,10 @@ Steps:
   4. Detect orphan rows on either side (events that didn't match across teensies).
   5. Validate that the 16-bit trigger_binary pattern agrees on matched rows.
   6. Build a unified DataFrame plus a drift-diagnostic histogram.
+
+Teensy 2 was malfunctioning during testing, but rather than deleting the section of this script where the two Teensy's are time-matched and
+then merged, I've kept that section because each Teensy has ADC values for half of the SiPMs and in order to get a complete picture of the ADC values for each event
+on all SiPMs, need the events to be correlated between the two Teensy's.
 """
 
 
@@ -21,12 +25,13 @@ DATA_DIR = '/Users/emmamartignoni/HERA-Research/HASP-Drexel'
 RESULTS_DIR = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/Results_fakedata'
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+# ================== PART 1: Load in data ===============================================
 
-# # === File paths for very short fake data ============================================
+# # ------------- File paths for very short fake data -----------------------------------
 # teensy1_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_1_test.csv'
 # teensy2_fp = '/Users/emmamartignoni/HERA-Research/HASP-Drexel/sipm_teensy_2_test.csv'
 
-# === File paths for "2 hour data" (fake data) ============================================
+# ------------- File paths for "2 hour data" (fake data) -------------------------------
 teensy1_fp = f'{DATA_DIR}/sipm_teensy_1_2hr.csv'
 teensy2_fp = f'{DATA_DIR}/sipm_teensy_2_2hr.csv'
 
@@ -46,8 +51,9 @@ print(f"Columns: {df2.columns.tolist()}")
 print(df2.head(3))
 
 
+# ================== PART 2: Plot and visualize data ===============================================
 
-# === Coincidence-group config ============================================
+# ------------- Coincidence-group config ---------------------------------------
 # Maps each "column" (physical stack of 4 scints) to the trigger numbers
 # believed to belong to it. EDIT THIS once Eray confirms wiring.
 # Order within each list matters: it defines the cumulative coincidence
@@ -59,24 +65,7 @@ COINCIDENCE_GROUPS = {
     'col4': [4, 8, 12, 16],
 }
 
-## Layer 1
-#  1  2
-#  3  4
-
-## Layer 2
-#  5  6
-#  7  8
-
-## Layer 3
-#  9   10
-#  11  12
-
-## Layer 4
-#  13  14
-#  15  16
-
-
-# ======== RAW COUNT DATA SUBPLOTS, BEFORE PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES ===================================
+# ------------- RAW COUNT DATA SUBPLOTS, BEFORE PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES -------------
 # Diagnostic plots of each teensy's raw trigger counts vs time, organized by column and also layer
 
 TEST_LABEL = 'test1'     # goes in the filename to distinguish runs on the same date
@@ -89,6 +78,8 @@ LAYER_GROUPS  = {f'Layer {n}': list(range(4*n - 3, 4*n + 1)) for n in range(1, 5
 # COINCIDENCE_GROUPS ('col1': [1,5,9,13], ...), enumerate(..., start=1) just renames the keys
 # 'col1' -> 'Col 1' for display.
 COLUMN_GROUPS = {f'Col {n}': trigs for n, trigs in enumerate(COINCIDENCE_GROUPS.values(), start=1)}
+
+print(f'SiPM trigger groupings:\n  Layers: {LAYER_GROUPS}\n  Columns: {COLUMN_GROUPS}')
 
 # One color per position within a group, applied in order. Because both groupings
 # draw 4 channels per panel, the same color always means "first/second/third/fourth
@@ -133,14 +124,15 @@ for df_raw, teensy_n in ((df1, 1), (df2, 2)): # in each loop, df_raw is the raw 
             ax.set_xlabel('Time since boot (min)')
             ax.set_ylabel('Cumulative counts')
 
-        fig.savefig(os.path.join(RESULTS_DIR,
-                                f'{RUN_DATE}_teensy{teensy_n}_{TEST_LABEL}_{kind}_graphs.png'))
+        fig.savefig(os.path.join(RESULTS_DIR, f'Teensy{teensy_n}_{TEST_LABEL}_{kind}_graphs.png'))
 
 plt.show()
 
 
 
-# ======== PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES ===================================
+# ================== PART 3: Analyze differences between the two Teensy's ===============================================
+
+# ------------- PROCESSING AND ANALYZING INTER-TEENSY DIFFERENCES -------------
 # Max allowed time gap between matched events on the two teensies.
 # Units = whatever trigger_NN_signal_time uses (TBD; assumed seconds).
 MERGE_TOLERANCE = 0.1 # PLACEHOLDER — tune once you've seen the real drift distribution.
@@ -151,7 +143,7 @@ TRIGGER_BINARY_COLS = [f'sipm_{i:02d}_trigger' for i in range(1, 17)] # creates 
 TRIGGER_DEAD_TIME_COLS  = ['trigger_' + str(i).zfill(2) + '_dead_time'  for i in range(1, 17)] # creates ['trigger_01_dead_time', 'trigger_02_dead_time', ..., 'trigger_16_dead_time'] list
 
 
-# === Per-row event_time ===================================================
+# ------------- Per-row event_time ----------------------------------------------------
 # pandas 2.x parses these ISO strings as datetime64[us], so .astype(np.int64)
 # would give microseconds, not nanoseconds. Subtracting the epoch and calling
 # .dt.total_seconds() is correct regardless of the inferred unit.
@@ -169,19 +161,19 @@ print(f"T2 event_time_unix_s: min={df2['event_time_unix_s'].min():.3f}  max={df2
 
 # 
 
-# === Sort by event_time_unix_s (required by merge_asof) ==========================
+# ------------- Sort by event_time_unix_s (required by merge_asof) -------------
 df1 = df1.sort_values('event_time_unix_s').reset_index(drop=True)
 df2 = df2.sort_values('event_time_unix_s').reset_index(drop=True)
 
 
-# === Tag original row indices so we can detect orphans ====================
+# ------------- Tag original row indices so we can detect orphans -------------
 # After merging, any df2 row whose original index doesn't appear in the
 # merge output is a teensy-2 orphan (no df1 row within tolerance).
 df1['_t1_orig_idx'] = df1.index
 df2['_t2_orig_idx'] = df2.index
 
 
-# === Rename teensy 2 columns to disambiguate from teensy 1 ================
+# ------------- Rename teensy 1 and 2 columns to make final merged dataframe more clear -------------
 # merge_asof resolves shared column names by appending _x/_y, which we don't
 # want. By renaming first, the columns arrive at the merge already labeled
 # correctly so pandas has nothing to resolve.
@@ -213,7 +205,7 @@ t2_time_renames['microseconds_since_boot'] = 'microseconds_since_boot_t2'
 t2_time_renames['utc_time'] = 'utc_time_t2' # e.g. 'trigger_01_event_time' -> 'trigger_01_event_time_t2'
 df2 = df2.rename(columns=t2_time_renames)
 t2_binary_renames = {}
-for col in TRIGGER_BINARY_COLS: # looping over the trigger event detection binary columns to rename with suffic t2, not doing this with t1 since want to keep them as the canonical trigger pattern (ie. not renamed)
+for col in TRIGGER_BINARY_COLS: # looping over the trigger event detection binary columns to rename with suffix t2, not doing this with t1 since want to keep them as the canonical trigger pattern (ie. not renamed)
     t2_binary_renames[col] = col + '_t2'
 df2 = df2.rename(columns=t2_binary_renames)
 df2 = df2.rename(columns={'cpu_temperature': 'cpu_temperature_t2'})
@@ -221,7 +213,7 @@ df2 = df2.rename(columns={'cpu_temperature': 'cpu_temperature_t2'})
 
 
 
-# === Merge: one-to-one nearest match within tolerance =====================
+# ------------- Merge: one-to-one nearest match within tolerance --------------------------
 # Was using merge_asof with nearest neighbor before, but two df1 rows can both claim the same teensy2 row because merge_asof picks the nearest teensy2 row without accounting for the boards' constant ~30 ms clock offset
 # and without preventing two teensy1 rows from claiming the same teensy2 row, and "nearest" ignores the constant clock offset between boards.
 # Fix both: shift onto a common clock, then pair off closest-first.
@@ -237,19 +229,19 @@ t2 = df2['event_time_unix_s'].values
 # Compute the median offset between the two teensies' clocks, then shift t1 onto t2's clock for nearest-neighbor pairing.
 j = np.clip(np.searchsorted(t2, t1), 1, len(t2) - 1)                    # t1 and t2 are arrays of event times; searchshorted looks in t2 for the insertion point of each t1 value so the event times are sorted (ie. t2 = np.array([10.0, 20.0, 30.0, 40.0]), t1 = np.array([22.5, 5.0, 31.0]), and np.searchsorted(t2, t1) -> array([2, 0, 3]), or the indices of where to insert)
                                                                         # np.clip ensures that the indices are within the bounds of t2 (1 to len(t2)-1) so we don't go out of bounds when checking neighbors
-near = np.where(np.abs(t1 - t2[j - 1]) < np.abs(t1 - t2[j]), j - 1, j) # you’re taking the j array of indices and returning an the left nearest neighbor index (j-1) where the distance to the left nearest neighbor (j-1) is closer than the right nearest. otherwise, if the right nearest neighbor is closer, then let the element be the right nearest neighbor index
+near = np.where(np.abs(t1 - t2[j - 1]) < np.abs(t1 - t2[j]), j - 1, j) # you’re taking the j array of indices and returning the left nearest neighbor index (j-1) where the distance to the left nearest neighbor (j-1) is closer than the right nearest. otherwise, if the right nearest neighbor is closer, then let the element be the right nearest neighbor index
 raw = t1 - t2[near] # raw is array of time differences between each t1 event time and its nearest t2 event time (after accounting for the nearest neighbor search above)
-CLOCK_OFFSET = np.median(raw[np.abs(raw) < MERGE_TOLERANCE])
+CLOCK_OFFSET = np.median(raw[np.abs(raw) < MERGE_TOLERANCE]) # clock offset is then the median of the median of time differences between each t1 event time and its nearest t2 event time
 print(f"\nEstimated T1-T2 clock offset: {CLOCK_OFFSET*1e3:.2f} ms")
 
-# --- every candidate pair within tolerance, on the shifted clock -----------
+# every candidate pair within tolerance, on the shifted clock
 a = t1 - CLOCK_OFFSET # create array of time values that are t1 event times shifted to be aligned with t2 event times
 lo = np.searchsorted(t2, a - MERGE_TOLERANCE) 
 hi = np.searchsorted(t2, a + MERGE_TOLERANCE)
 I = np.repeat(np.arange(len(a)), hi - lo)
 J = np.concatenate([np.arange(l, h) for l, h in zip(lo, hi)])
 
-# --- accept closest-first, retiring both rows once used --------------------
+# accept closest-first, retiring both rows once used
 partner = np.full(len(df1), -1)          # partner[k] = df2 row paired to df1 row k
 taken = np.zeros(len(df2), bool)
 for k in np.argsort(np.abs(a[I] - t2[J]), kind='stable'):
@@ -259,7 +251,7 @@ for k in np.argsort(np.abs(a[I] - t2[J]), kind='stable'):
     partner[i] = j
     taken[j] = True
 
-# --- assemble `merged` with the same layout merge_asof produced ------------
+# assemble `merged` with the same layout merge_asof produced
 df2_side = df2.drop(columns=[c for c in df2.columns if c in df1.columns])
 right = df2_side.iloc[np.where(partner >= 0, partner, 0)].reset_index(drop=True)
 right.loc[partner < 0, :] = np.nan       # unmatched df1 rows get NaN on the t2 side
@@ -267,16 +259,12 @@ right.loc[partner < 0, :] = np.nan       # unmatched df1 rows get NaN on the t2 
 merged = pd.concat([df1.reset_index(drop=True), right], axis=1)
 print(f"Pairs: {taken.sum()}  |  double-claimed T2 rows: 0 by construction")
 
-
-
-
-# 3. Right after merge_asof, before orphans are appended — see how many matched vs dropped
+# Right after merge_asof, before orphans are appended — see how many matched vs dropped
 n_matched = merged['_t2_orig_idx'].notna().sum()
 n_unmatched_t1 = merged['_t2_orig_idx'].isna().sum()
 print(f"\n=== AFTER merge_asof (before orphan concat) ===")
 print(f"T1 rows with a T2 match within tolerance: {n_matched}")
 print(f"T1 rows with NO T2 match (will be orphan_t1): {n_unmatched_t1}")
-
 
 # Add teensy-2 orphans (events that didn't have time match across teensies)
 matched_t2_idx = df2['_t2_orig_idx'].values[partner[partner >= 0]].tolist()
@@ -284,7 +272,7 @@ t2_orphans = df2[~df2['_t2_orig_idx'].isin(matched_t2_idx)].copy() # slice df2 b
 merged = pd.concat([merged, t2_orphans], ignore_index=True, sort=False) # stack the teensy2 orphan rows onto the bottom of the merged DataFrame, resetting the index to be continuous from 0 again
 
 
-# === Build match_status column ============================================
+# ------------- Build match_status column -------------
 # Four possible states per row:
 #   matched          : both teensies have data and trigger patterns agree
 #   pattern_mismatch : both teensies have data but patterns disagree
@@ -308,12 +296,12 @@ merged['match_status'] = np.select(
 )
 
 
-# 4. After match_status is assigned — full breakdown
+# After match_status is assigned — full breakdown
 print("\n=== MATCH STATUS BREAKDOWN ===")
 print(merged['match_status'].value_counts())
 print(f"Total rows: {len(merged)}")
 
-# 5. Spot-check a few rows of each type
+# Spot-check a few rows of each type
 for status in ['matched', 'pattern_mismatch', 'orphan_t1', 'orphan_t2']:
     subset = merged[merged['match_status'] == status]
     if len(subset) > 0:
@@ -321,25 +309,25 @@ for status in ['matched', 'pattern_mismatch', 'orphan_t1', 'orphan_t2']:
         print(subset[['event_time_unix_s', 'match_status', '_t1_orig_idx', '_t2_orig_idx']].head(2)) # t1_orig_idx and t2_orig_idx are the original row indices from the teensy CSVs, so you can trace back to the raw data if needed
 
 
-# === Drop redundant teensy-2 binary columns (keeping teensy-1's as canonical) ===
+# ------------- Drop redundant teensy-2 binary columns (keeping teensy-1's as canonical) -------------
 # at this point, matches have been validated and time columns have been kept for drift analysis, so the teensy-2 binary cols are no longer needed and just take up space.
 merged = merged.drop(columns=[c + '_t2' for c in TRIGGER_BINARY_COLS])
 merged = merged.sort_values('event_time_unix_s').reset_index(drop=True) # final tidy: sort by event_time_unix_s
 
-# 6. Final shape and a peek at the finished DataFrame
+# Final shape and a peek at the finished DataFrame
 print("\n=== FINAL MERGED DATAFRAME ===")
 print(f"Shape: {merged.shape}")
 print(f"Columns ({len(merged.columns)} total):\n{merged.columns.tolist()}")
 print("\nFirst 3 rows:")
 print(merged.head(3))
 
-# === Summary print ========================================================
+# Summary print
 print("Match status counts:")
 print(merged['match_status'].value_counts())
 print(f"\nTotal rows in unified DataFrame: {len(merged)}")
 
 
-# === Inter-teensy drift diagnostic ========================================
+# ------------- Inter-teensy drift diagnostic --------------------------
 # For every matched event and every trigger that fired on that event,
 # compute Δt = signal_time_t1 - signal_time_t2 and aggregate.
 matched_only = merged[merged['match_status'] == 'matched'] # slicing the dataframe to only include rows where there was a time match and trigger patterns agreed
@@ -370,10 +358,8 @@ ax.set_title('Inter-teensy signal-time drift distribution')
 plt.tight_layout()
 plt.show()
 
-# Save master merged DataFrame to CSV for downstream analysis
-merged.to_csv(os.path.join(RESULTS_DIR, 'merged_teensy_data.csv'), index=False)
 
-
+# ================== PART 4: Create column identifying coincidence events ===============================================
 
 # === Cumulative coincidence counts per column ============================
 # For each configured column, creating columns that give the cumulative count of coincidence events on any combination of the four scintillators in that row
@@ -383,28 +369,26 @@ merged.to_csv(os.path.join(RESULTS_DIR, 'merged_teensy_data.csv'), index=False)
 for col_name, trigger_nums in COINCIDENCE_GROUPS.items(): # looping through the column names and list of trigger numbers defined in COINCIDENCE_GROUPS dictionary
                                                             # for each iteration col_name is the key (ie. col1) and trigger_nums is the list of trigger numbers that go in one column
 
-    # Boolean mask: True only for fully matched rows
-    matched_mask = merged['match_status'] == 'matched'
+    # # When using both teensy data files: filter to only include rows where the two teensies matched and their trigger patterns agreed
+    # matched_mask = merged['match_status'] == 'matched' # Boolean mask: True only for fully matched rows
 
-    # This will accumulate the AND condition across triggers as we loop.
-    # Starts as all-True so the first AND doesn't wipe everything out.
-    running_and = pd.Series(True, index=merged.index)
+    running_and = pd.Series(True, index=merged.index) # This will accumulate the AND condition across triggers as we loop.
+                                                      # Starts as all-True so the first AND doesn't wipe everything out.
 
-    # Keeps track of which triggers we've added so far, for the column name
-    triggers_so_far = []
+    triggers_so_far = []  # Keeps track of which triggers we've added so far, for the column name
 
+    # loop over each of the trigger numbers in the current column's list of triggers
     for nn in trigger_nums:
 
-        # On each iteration, build the name of the binary column for the current trigger number nn, e.g. if nn=1 then binary_col is 'trigger_01_binary'
-        binary_col = f'sipm_{nn:02d}_trigger_t1' # _t1 suffix since all teensy1 columns are now symmetrically labeled
-
-        # Creating boolean array that is True when trigger number nn fired (aka when binary is 1) in a given row of the merged dataframe
-        this_trigger_fired = merged[binary_col] == 1
+        # look at the trigger column in the merged dataframe for each of the SiPMs, and check if that trigger fired; for each SiPM in the column, create a boolean array indiciating whether that trigger fired (1) or not (0) in that row of the merged dataframe 
+        binary_col = f'sipm_{nn:02d}_trigger_t1' # On each iteration, build the name of the binary column for the current trigger number nn, e.g. if nn=1 then binary_col is 'trigger_01_binary'
+        this_trigger_fired = merged[binary_col] == 1  # Creating boolean array that is True when trigger number nn fired (aka when binary is 1) in a given row of the merged dataframe
+                                                        # will be True for rows in merged dataframe where the current trigger number nn fired (binary column is 1) and False otherwise
 
         # Creating a boolean array that is True only for rows where all the triggers we've looped through so far are true, and the row is a matched event
-        # Accumulates across iterations — after iter 1: "did trigger 1 fire?", after iter 2: "did trigger 1 AND 5 fire?", etc. — so that each coincidence level builds on the last
-        # while also masking to only count matched events (not orphans or pattern mismatches)
-        running_and = running_and & this_trigger_fired & matched_mask
+        # Accumulates across iterations of this inner loop over the triggers in a column — after iter 1: "did trigger 1 fire?", after iter 2: "did trigger 1 AND 5 fire?", etc. — so that each coincidence level builds on the last
+        # add " & matched_mask " to the end to also mask only count matched events (not orphans or pattern mismatches)
+        running_and = running_and & this_trigger_fired # in each iteration, this_trigger_fired is giving the boolean array for the current trigger that has either True/False for every row in the merged dataframe
 
         # Add this trigger to our running list
         triggers_so_far.append(str(nn))
@@ -428,6 +412,10 @@ for col_name, trigger_nums in COINCIDENCE_GROUPS.items():
         merged[f'delta_{cum_col}'] = merged[cum_col].diff().clip(lower=0).fillna(0)
 
 
+# Save master merged DataFrame to CSV for downstream analysis
+merged.to_csv(os.path.join(RESULTS_DIR, 'merged_teensy_data.csv'), index=False)
+
+
 print("\nFinal coincidence counts per column:")
 for col_name, trigger_nums in COINCIDENCE_GROUPS.items():                  # print the last value of each cumulative column as a sanity check — that's the total event count for that coincidence level over the whole run
     cw_cols = [c for c in merged.columns if c.startswith(f'{col_name}_CW_')]
@@ -438,104 +426,77 @@ for col_name, trigger_nums in COINCIDENCE_GROUPS.items():                  # pri
 # FINAL MERGED DATAFRAME SHOULD HAVE THE FOLLOWING HEADERS:
 # event_time_unix_s, event_time_unix_s_t2, _t1_orig_idx, _t2_orig_idx, utc_time_t1, utc_time_t2, microseconds_since_boot_t1, microseconds_since_boot_t2, sipm_01_trigger_t1, sipm_02_trigger_t1, sipm_03_trigger_t1, sipm_04_trigger_t1, sipm_05_trigger_t1, sipm_06_trigger_t1, sipm_07_trigger_t1, sipm_08_trigger_t1, sipm_09_trigger_t1, sipm_10_trigger_t1, sipm_11_trigger_t1, sipm_12_trigger_t1, sipm_13_trigger_t1, sipm_14_trigger_t1, sipm_15_trigger_t1, sipm_16_trigger, trigger_01_dead_time_t1, trigger_02_dead_time_t1, trigger_03_dead_time_t1, trigger_04_dead_time_t1, trigger_05_dead_time_t1, trigger_06_dead_time_t1, trigger_07_dead_time_t1, trigger_08_dead_time_t1, trigger_09_dead_time_t1, trigger_10_dead_time_t1, trigger_11_dead_time_t1, trigger_12_dead_time_t1, trigger_13_dead_time_t1, trigger_14_dead_time_t1, trigger_15_dead_time_t1, trigger_16_dead_time_t1, trigger_01_dead_time_t2, trigger_02_dead_time_t2, trigger_03_dead_time_t2, trigger_04_dead_time_t2, trigger_05_dead_time_t2, trigger_06_dead_time_t2, trigger_07_dead_time_t2, trigger_08_dead_time_t2, trigger_09_dead_time_t2, trigger_10_dead_time_t2, trigger_11_dead_time_t2, trigger_12_dead_time_t2, trigger_13_dead_time_t2, trigger_14_dead_time_t2, trigger_15_dead_time_t2, trigger_16_dead_time_t2, sipm_01_adc, sipm_02_adc, sipm_03_adc, sipm_04_adc, sipm_05_adc, sipm_06_adc, sipm_07_adc, sipm_08_adc, sipm_09_adc, sipm_10_adc, sipm_11_adc, sipm_12_adc, sipm_13_adc, sipm_14_adc, sipm_15_adc, sipm_16_adc, sipm_01_threshold, sipm_02_threshold, sipm_03_threshold, sipm_04_threshold, sipm_05_threshold, sipm_06_threshold, sipm_07_threshold, sipm_08_threshold, sipm_09_threshold, sipm_10_threshold, sipm_11_threshold, sipm_12_threshold, sipm_13_threshold, sipm_14_threshold, sipm_15_threshold, sipm_16_threshold, cpu_temperature_t1, cpu_temperature_t2, match_status, col1_CW_1&5, col1_CW_1&5&9, col1_CW_1&5&9&13, col2_CW_2&6, col2_CW_2&6&10, col2_CW_2&6&10&14, col3_CW_3&7, col3_CW_3&7&11, col3_CW_3&7&11&15, col4_CW_4&8, col4_CW_4&8&12, col4_CW_4&8&12&16, delta_col1_CW_1&5, delta_col1_CW_1&5&9, delta_col1_CW_1&5&9&13, delta_col2_CW_2&6, delta_col2_CW_2&6&10, delta_col2_CW_2&6&10&14, delta_col3_CW_3&7, delta_col3_CW_3&7&11, delta_col3_CW_3&7&11&15, delta_col4_CW_4&8, delta_col4_CW_4&8&12, delta_col4_CW_4&8&12&16
 
+# === Cumulative coincidences per column, over time =======================
+fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+t_rel = merged['event_time_unix_s'] - merged['event_time_unix_s'].min()
 
-# DIAGNOSTIC PLOTTING
-# === Per-channel counts vs time ===========================================
-TIME_BIN_S = 60          # bin width for the count-vs-time plots
+for ax, (col_name, trigs) in zip(axes.flat, COINCIDENCE_GROUPS.items()):
+    for colour, i in zip(COLORS[1:], range(2, len(trigs) + 1)):
+        label = '&'.join(str(n) for n in trigs[:i])          # e.g. '1&5&9'
+        ax.plot(t_rel, merged[f'{col_name}_CW_{label}'],
+                color=colour, label=f"CW {label.replace('&', ' & ')}")
+    ax.set_title(col_name)
+    ax.legend(fontsize=8)
 
-LAYER_GROUPS  = {f'Layer {n}': list(range(4*n - 3, 4*n + 1)) for n in range(1, 5)}
-COLUMN_GROUPS = {f'Col {n}': trigs for n, (name, trigs)
-                 in enumerate(COINCIDENCE_GROUPS.items(), start=1)}
-COLORS = ['tomato', 'skyblue', 'forestgreen', 'purple']
-
-plot_rows = merged[merged['match_status'].isin(['matched', 'pattern_mismatch'])]
-run_start = plot_rows['event_time_unix_s'].min()
-bin_idx = ((plot_rows['event_time_unix_s'] - run_start) // TIME_BIN_S).astype(int)
-
-# counts[nn] = how many times channel nn fired in each time bin
-counts = pd.DataFrame({nn: plot_rows[f'sipm_{nn:02d}_trigger_t1'].groupby(bin_idx).sum()
-                       for nn in range(1, 17)})
-counts = counts.reindex(range(bin_idx.max() + 1), fill_value=0)
-bin_mid_s = counts.index * TIME_BIN_S + TIME_BIN_S / 2
-
-
-def plot_grid(groups, cumulative, fname, suptitle):
-    """2x2 grid, one panel per group, one line per channel in that group."""
-    fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
-    for ax, (label, trigs) in zip(axes.flat, groups.items()):
-        for colour, nn in zip(COLORS, trigs):
-            y = counts[nn].cumsum() if cumulative else counts[nn]
-            ax.plot(bin_mid_s, y, color=colour, label=f'CH{nn}')
-        ax.set_title(label)
-        ax.legend(fontsize=8)
-    for ax in axes[1, :]:
-        ax.set_xlabel('Time since run start (s)')
-    for ax in axes[:, 0]:
-        ax.set_ylabel('Cumulative counts' if cumulative else f'Counts per {TIME_BIN_S}s')
-    fig.suptitle(suptitle)
-    fig.tight_layout()
-    fig.savefig(os.path.join(RESULTS_DIR, fname), dpi=150)
-
-
-plot_grid(LAYER_GROUPS,  False, 'layer_counts.png',             f'Counts per {TIME_BIN_S}s by layer')
-plot_grid(LAYER_GROUPS,  True,  'layer_counts_cumulative.png',  'Cumulative counts by layer')
-plot_grid(COLUMN_GROUPS, False, 'column_counts.png',            f'Counts per {TIME_BIN_S}s by column')
-plot_grid(COLUMN_GROUPS, True,  'column_counts_cumulative.png', 'Cumulative counts by column')
+for ax in axes[1, :]:
+    ax.set_xlabel('Time since run start (s)')
+for ax in axes[:, 0]:
+    ax.set_ylabel('Cumulative coincidence counts')
+n_matched = int((merged['match_status'] == 'matched').sum())
+fig.suptitle(
+    'Cumulative column coincidences — cross-verified events only\n'
+    f'{n_matched} events out of {len(merged)} total events where 16-channel patterns match on both Teensys, \n '
+    f'paired within ±{MERGE_TOLERANCE:.1f} s of the {CLOCK_OFFSET*1e3:.0f} ms inter-Teensy clock offset',
+    fontsize=11)
+fig.tight_layout()
+fig.savefig(os.path.join(RESULTS_DIR, 'column_coincidences.png'), dpi=150)
 plt.show()
 
 
+# # DIAGNOSTIC PLOTTING
+# # === Per-channel counts vs time ===========================================
+# TIME_BIN_S = 60          # bin width for the count-vs-time plots
 
-# ==================== SELF-VERIFICATION CHECKS ====================
-print("\n=== VERIFICATION ===")
+# LAYER_GROUPS  = {f'Layer {n}': list(range(4*n - 3, 4*n + 1)) for n in range(1, 5)}
+# COLUMN_GROUPS = {f'Col {n}': trigs for n, (name, trigs)
+#                  in enumerate(COINCIDENCE_GROUPS.items(), start=1)}
+# COLORS = ['tomato', 'skyblue', 'forestgreen', 'purple']
 
-# 1. Row conservation: every input row appears exactly once in merged
-n_pairs = int(taken.sum())
-expected_rows = len(t1) + len(t2) - n_pairs
-print(f"Row conservation: {len(merged)} rows, expected {expected_rows}  "
-      f"{'PASS' if len(merged) == expected_rows else 'FAIL'}")
+# plot_rows = merged[merged['match_status'].isin(['matched', 'pattern_mismatch'])] # only plot rows where both teensies have data (aka either pattern matches or mismatches)
+# run_start = plot_rows['event_time_unix_s'].min() 
+# bin_idx = ((plot_rows['event_time_unix_s'] - run_start) // TIME_BIN_S).astype(int)
 
-# 2. One-to-one pairing: no T2 row used twice
-t2_used = merged['_t2_orig_idx'].dropna()
-print(f"No double-claimed T2 rows: {'PASS' if not t2_used.duplicated().any() else 'FAIL'}")
-
-# 3. Trigger count conservation: per-channel totals in merged (t1 side)
-#    must equal the raw df1 column sums — nothing lost or duplicated in the merge
-raw_t1_totals = pd.read_csv(teensy1_fp)[TRIGGER_BINARY_COLS].sum()
-merged_t1_totals = merged[[c + '_t1' for c in TRIGGER_BINARY_COLS]].sum()
-ok = all(raw_t1_totals.values == merged_t1_totals.values)
-print(f"T1 trigger totals preserved through merge: {'PASS' if ok else 'FAIL'}")
-
-# 4. Independent recount of each coincidence level (direct boolean AND,
-#    no cumsum) vs the final value of the cumulative column
-print("Coincidence recount (direct AND vs cumsum final):")
-for col_name, trigs in COINCIDENCE_GROUPS.items():
-    for i in range(2, len(trigs) + 1):
-        label = '&'.join(str(n) for n in trigs[:i])
-        cw = f'{col_name}_CW_{label}'
-        direct = ((merged[[f'sipm_{n:02d}_trigger_t1' for n in trigs[:i]]] == 1).all(axis=1)
-                  & (merged['match_status'] == 'matched')).sum()
-        final = int(merged[cw].iloc[-1])
-        print(f"  {cw}: direct={direct}  cumsum={final}  {'PASS' if direct == final else 'FAIL'}")
-
-# 5. Nesting: adding a trigger to the AND can only reduce counts
-for col_name, trigs in COINCIDENCE_GROUPS.items():
-    finals = []
-    for i in range(2, len(trigs) + 1):
-        label = '&'.join(str(n) for n in trigs[:i])
-        finals.append(int(merged[f'{col_name}_CW_{label}'].iloc[-1]))
-    ok = all(finals[k] >= finals[k+1] for k in range(len(finals)-1))
-    print(f"  {col_name} nesting {finals}: {'PASS' if ok else 'FAIL'}")
-
-# 6. Delta columns reconstruct the cumulative total (catches the row-0 NaN edge)
-for c in [c for c in merged.columns if c.startswith('delta_')]:
-    cum_final = int(merged[c.replace('delta_', '')].iloc[-1])
-    delta_sum = int(merged[c].sum())
-    if delta_sum != cum_final:
-        print(f"  {c}: sum(delta)={delta_sum} != cumulative final={cum_final}  FAIL")
-print("Delta reconstruction check done (silent = all PASS)")
-
-# 7. Drift bounded by tolerance around the estimated offset
-drift_ok = ((drift - CLOCK_OFFSET).abs() <= MERGE_TOLERANCE + 1e-9).all()
-print(f"All matched drift within CLOCK_OFFSET ± MERGE_TOLERANCE: {'PASS' if drift_ok else 'FAIL'}")
+# # counts[nn] = how many times channel nn fired in each time bin
+# counts = pd.DataFrame({nn: plot_rows[f'sipm_{nn:02d}_trigger_t1'].groupby(bin_idx).sum()
+#                        for nn in range(1, 17)})
+# counts = counts.reindex(range(bin_idx.max() + 1), fill_value=0)
+# bin_mid_s = counts.index * TIME_BIN_S + TIME_BIN_S / 2
 
 
+# def plot_grid(groups, cumulative, fname, suptitle):
+#     '''
+#     Plot 2x2 grid of counts vs time for the given groups
+#     '''
+#     fig, axes = plt.subplots(2, 2, figsize=(11, 8), sharex=True)
+
+#     # loop over the 4 groups (either layers or columns) and their corresponding axes in the 2x2 grid
+#     for ax, (label, trigs) in zip(axes.flat, groups.items()):
+#         for colour, nn in zip(COLORS, trigs): # loop through the 4 channels in this group, plotting each one with its own color
+#             y = counts[nn].cumsum() if cumulative else counts[nn]
+#             ax.plot(bin_mid_s, y, color=colour, label=f'CH{nn}')
+#         ax.set_title(label)
+#         ax.legend(fontsize=8)
+#     for ax in axes[1, :]:
+#         ax.set_xlabel('Time since run start (s)')
+#     for ax in axes[:, 0]:
+#         ax.set_ylabel('Cumulative counts' if cumulative else f'Counts per {TIME_BIN_S}s')
+#     fig.suptitle(suptitle)
+#     fig.tight_layout()
+#     fig.savefig(os.path.join(RESULTS_DIR, fname), dpi=150)
+
+
+# plot_grid(LAYER_GROUPS,  False, 'layer_counts.png',             f'Counts per {TIME_BIN_S}s by layer')
+# plot_grid(LAYER_GROUPS,  True,  'layer_counts_cumulative.png',  'Cumulative counts by layer')
+# plot_grid(COLUMN_GROUPS, False, 'column_counts.png',            f'Counts per {TIME_BIN_S}s by column')
+# plot_grid(COLUMN_GROUPS, True,  'column_counts_cumulative.png', 'Cumulative counts by column')
+# plt.show()
