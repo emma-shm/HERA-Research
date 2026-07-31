@@ -1,6 +1,39 @@
 # `CW-analysis/`
 Scripts for calibrating and analyzing HERA's typical three-scintillator CW detectors, using calibration for particle identification
 
+## Full Code Pipeline Example Usage
+
+Update the file paths below to point to your own calibration dataset. This example assumes three scintillator files (top, middle, bottom) and a corresponding datalogger file.
+
+```python
+# ============================ CALIBRATION RUN =============================
+
+datalogger_fp = f"{DATA_DIR}/<date>/DataLogger/<datalogger_file>.csv"
+top_scint_fp = f"{DATA_DIR}/<date>/<top_detector_directory>/<top_detector_file>.txt"
+mid_scint_fp = f"{DATA_DIR}/<date>/<middle_detector_directory>/<middle_detector_file>.txt"
+bot_scint_fp = f"{DATA_DIR}/<date>/<bottom_detector_directory>/<bottom_detector_file>.txt"
+
+datalogger_df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
+three_scintillators = Scintillators_Processing([top_scint_fp, mid_scint_fp, bot_scint_fp], datalogger_df)
+analysis = Detector_Analysis(three_scintillators, datalogger_df, results_dir=os.path.join(RESULTS_DIR, "<output_directory>"))
+
+analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(lower_top, upper_top), (lower_middle, upper_middle), (lower_bottom, upper_bottom)])
+```
+
+### Choosing `moyal_fit_ranges`
+
+The `moyal_fit_ranges` argument is determined through an iterative guess-and-check process.
+
+1. Start with reasonable lower and upper mV bounds for each scintillator.
+2. Run the pipeline.
+3. Inspect the generated rate spectrum plots (`mip_normalized.png` or `rate_spectra.png`).
+4. Adjust the fit ranges so they isolate the MIP peak more accurately.
+5. Update `moyal_fit_ranges` with the new values and rerun the pipeline.
+
+Each tuple in `moyal_fit_ranges` corresponds to the `(lower_bound, upper_bound)` for the top, middle, and bottom scintillators, respectively. Because detector responses vary between datasets, there is no universal set of fit ranges; they should be selected separately for each calibration run.
+
+## For an ANALYSIS RUN, you do analyze_calibrated_data_with_fixed_MPVs() and use MPVs calculated from the calibation run as an input.
+
 ## `CW_calibration_grounddata.ipynb`
 NOTE: NOTEBOOK OUT OF DATE
 All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.py
