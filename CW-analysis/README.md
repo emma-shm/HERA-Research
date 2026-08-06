@@ -1,42 +1,162 @@
 # `CW-analysis/`
 Scripts for calibrating and analyzing HERA's typical three-scintillator CW detectors, using calibration for particle identification
 
-## Full Code Pipeline Example Usage
+## Usage
 
-Update the file paths below to point to your own calibration dataset. This example assumes three scintillator files (top, middle, bottom) and a corresponding datalogger file.
+Every run is the same three steps — process the datalogger, align the
+scintillators, analyze — and differs only in whether the MPVs get fit from this
+dataset or supplied from a previous one. Update the paths to your own data; the
+examples assume three scintillators (top, middle, bottom) plus a datalogger.
 
 ```python
-# ============================ CALIBRATION RUN =============================
-
 datalogger_fp = f"{DATA_DIR}/<date>/DataLogger/<datalogger_file>.csv"
-top_scint_fp = f"{DATA_DIR}/<date>/<top_detector_directory>/<top_detector_file>.txt"
-mid_scint_fp = f"{DATA_DIR}/<date>/<middle_detector_directory>/<middle_detector_file>.txt"
-bot_scint_fp = f"{DATA_DIR}/<date>/<bottom_detector_directory>/<bottom_detector_file>.txt"
-
-datalogger_df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
-three_scintillators = Scintillators_Processing([top_scint_fp, mid_scint_fp, bot_scint_fp], datalogger_df)
-analysis = Detector_Analysis(three_scintillators, datalogger_df, results_dir=os.path.join(RESULTS_DIR, "<output_directory>"))
-
-analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(lower_top, upper_top), (lower_middle, upper_middle), (lower_bottom, upper_bottom)])
+top_scint_fp  = f"{DATA_DIR}/<date>/<top_detector_directory>/<top_detector_file>.txt"
+mid_scint_fp  = f"{DATA_DIR}/<date>/<middle_detector_directory>/<middle_detector_file>.txt"
+bot_scint_fp  = f"{DATA_DIR}/<date>/<bottom_detector_directory>/<bottom_detector_file>.txt"
 ```
+
+### Option A — the three classes, step by step
+
+Use this when you want a handle on the intermediate objects, or when a run needs
+something non-standard (a custom `name=` on the datalogger figure, a different
+`results_dir` per class, inspecting `proc.aligned_scint1` before analyzing).
+
+```python
+from calibration_methods import (
+    Datalogger_Processing, Scintillators_Processing, Detector_Analysis
+)
+
+# 1) datalogger → continuous Absolute Timer (handles timer resets)
+df   = Datalogger_Processing(datalogger_fp, show_plots=False).process()
+
+# 2) align each scintillator to the datalogger (deadtime-corrected livetime)
+proc = Scintillators_Processing([top_scint_fp, mid_scint_fp, bot_scint_fp], df, show_plots=False)
+
+# 3) calibrate + plot — pick ONE mode:
+analysis = Detector_Analysis(proc, df, results_dir=os.path.join(RESULTS_DIR, "<output_directory>"))
+analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # CALIBRATION RUN
+# analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])              # ANALYSIS RUN
+```
+
+### Option B — one call
+
+Same pipeline, same outputs. Which terminal method runs is decided by which
+argument you pass — exactly one of `moyal_fit_ranges` or `MPVs`.
+
+```python
+from calibration_methods import process_run
+
+# CALIBRATION RUN — fit a Moyal per scintillator to extract the MPVs
+df, proc, analysis = process_run(
+    datalogger_fp, [top_scint_fp, mid_scint_fp, bot_scint_fp],
+    moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)],
+    results_dir=os.path.join(RESULTS_DIR, "<output_directory>"),
+)
+
+# ANALYSIS RUN — apply MPVs from a previous calibration, no fitting
+df, proc, analysis = process_run(
+    datalogger_fp, [top_scint_fp, mid_scint_fp, bot_scint_fp],
+    MPVs=[56.78, 57.00, 54.64],
+    results_dir=os.path.join(RESULTS_DIR, "<output_directory>"),
+    twodim_hist_args={'col': 'MIP', 'cbar_max': 0.0005},
+)
+```
+
+### Calibration vs. analysis runs
+
+- **Calibration run** — the MPVs aren't known yet, so a Moyal is fit to each
+  scintillator's coincident spectrum. Requires `moyal_fit_ranges`.
+- **Analysis run** — the MPVs are already known from a prior calibration of the
+  *same* scintillators, so no fitting happens. Requires `MPVs`.
 
 ### Choosing `moyal_fit_ranges`
 
-The `moyal_fit_ranges` argument is determined through an iterative guess-and-check process.
+Determined by guess-and-check:
 
-1. Start with reasonable lower and upper mV bounds for each scintillator.
+1. Start with reasonable lower/upper mV bounds for each scintillator.
 2. Run the pipeline.
-3. Inspect the generated rate spectrum plots (`mip_normalized.png` or `rate_spectra.png`).
-4. Adjust the fit ranges so they isolate the MIP peak more accurately.
-5. Update `moyal_fit_ranges` with the new values and rerun the pipeline.
+3. Inspect the generated rate spectrum, `mip_normalized.png`.
+4. Adjust the ranges so they isolate the MIP peak more accurately.
+5. Update `moyal_fit_ranges` and rerun.
 
-Each tuple in `moyal_fit_ranges` corresponds to the `(lower_bound, upper_bound)` for the top, middle, and bottom scintillators, respectively. Because detector responses vary between datasets, there is no universal set of fit ranges; they should be selected separately for each calibration run.
+Each tuple is `(lower_bound, upper_bound)` for the top, middle, and bottom
+scintillators respectively. Detector response varies between datasets, so there
+is no universal set of ranges — pick them separately for each calibration run.
 
-## For an ANALYSIS RUN, you do analyze_calibrated_data_with_fixed_MPVs() and use MPVs calculated from the calibation run as an input.
+### Outputs
+
+Results live on the returned `analysis`: `analysis.master_df` (the calibrated
+event dataframe) and `analysis.mpv_per_scint` (the MPVs used). Plots and
+`calibration_summary.csv` are written to `results_dir`; with no `results_dir`
+they're shown interactively instead. In Option B, `results_dir` reaches
+`Detector_Analysis` only — pass `save_all=True` to also save the datalogger and
+per-scintillator SiPM figures.
+
+**The scripts in this directory show both patterns in context:**
+
+- **`three_scint_calibration_grounddata.py`** — bench datasets (room-temp plus
+  temperature-varying fridge/freezer runs), extracting reference MPVs via Moyal
+  fits. Start here for the fitting workflow.
+- **`three_scint_analysis_Eu.py`** — a background calibration run whose fitted
+  MPVs are chained straight into the source run's `MPVs=` argument.
+- **`three_scint_analysis_Cs137.py`** — source and background runs, both fixed-MPV.
+- **`May31st_flight_analysis.py`** — ground-calibration MPVs applied to the
+  balloon run, split into sections with the `flightanalysis_methods.py` helpers.
 
 ## `CW_calibration_grounddata.ipynb`
 NOTE: NOTEBOOK OUT OF DATE
-All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.py
+All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.pyThere are two equivalent ways to run a dataset: instantiate the three classes
+yourself, or hand everything to `process_run` in one call. They do the same work
+— `process_run` is just the three steps wrapped up.
+
+**Option A — the three classes, step by step.** Use this when you want to keep a
+handle on the intermediate objects, or when a run needs something non-standard
+(a custom `name=` on the datalogger figure, different `results_dir` per class,
+inspecting `proc.aligned_scint1` before analyzing).
+
+```python
+from calibration_methods import (
+    Datalogger_Processing, Scintillators_Processing, Detector_Analysis
+)
+
+# 1) datalogger → continuous Absolute Timer (handles timer resets)
+df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
+
+# 2) align each scintillator to the datalogger (deadtime-corrected livetime)
+proc = Scintillators_Processing([scint1_fp, scint2_fp, scint3_fp], df)
+
+# 3) calibrate + plot — pick ONE mode:
+analysis = Detector_Analysis(proc, df, results_dir="Results/roomtemp")
+analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
+# analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])              # or supply MPVs
+```
+
+**Option B — one call.** Same pipeline, same outputs. Which terminal method runs
+is decided by which argument you pass:
+
+```python
+from calibration_methods import process_run
+
+# CALIBRATION RUN — fit a Moyal per scintillator to extract the MPVs
+df, proc, analysis = process_run(
+    datalogger_fp, [scint1_fp, scint2_fp, scint3_fp],
+    moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)],
+    results_dir="Results/roomtemp",
+)
+
+# ANALYSIS RUN — apply MPVs from a previous calibration, no fitting
+df, proc, analysis = process_run(
+    datalogger_fp, [scint1_fp, scint2_fp, scint3_fp],
+    MPVs=[56.78, 57.00, 54.64],
+    results_dir="Results/Cs137/Source",
+    twodim_hist_args={'col': 'MIP', 'cbar_max': 0.0005},
+)
+```
+
+Either way, results live on the returned `analysis`: `analysis.master_df`
+(calibrated event dataframe) and `analysis.mpv_per_scint` (MPVs used). Plots and
+`calibration_summary.csv` are written to `results_dir`; with no `results_dir`
+they're shown interactively instead.
 
 
 ## `calibration_methods.py`
@@ -77,11 +197,14 @@ built around three classes plus a set of top-level helpers.
 
 **Helper functions, that CAN be imported and used in other scripts if desired**
 
-- **`processing_pipeline(datalogger, scintillators, Moyal_fit_ranges=None, MPVs=None, ...)`**
+- **`process_run(datalogger_fp, scint_fps, moyal_fit_ranges=None, MPVs=None, ...)`**
   — one-call entry point that chains `Datalogger_Processing` → `Scintillators_Processing`
-  → `Detector_Analysis`. Pass either Moyal fit ranges (to fit each spectrum) or fixed
-  MPVs (to skip fitting); returns the datalogger processor, scintillator
-  processor, and analysis instances.
+  → `Detector_Analysis` and dispatches to the right terminal method. Pass either
+  `moyal_fit_ranges` (calibration run) or `MPVs` (analysis run) — exactly one, not both.
+  `results_dir` goes to `Detector_Analysis`; add `save_all=True` to also save the
+  datalogger and per-scintillator SiPM figures. Extra keywords (`noise_threshold`,
+  `twodim_hist_args`, and `mip_window` on the fixed-MPV path only) are forwarded to
+  whichever method is dispatched. Returns `(datalogger_df, processor, analysis)`.
 - **`split_flight_and_background(...)`** — splits a run into flight vs.
   background using altitude, cutting where the payload returns to ground after
   apogee.
@@ -169,56 +292,6 @@ Defines a few flight-specific helpers on top of `calibration_methods`:
   objects.
 - **`analyze_flight_window(...)`** — convenience wrapper for a single
   `[t_start, t_end]` window.
-
----
-
-### Usage
-
-`calibration_methods.py` is the library — the classes and helpers that do the
-work. `CW_calibration_grounddata.py` and `flight-data-analysis.py` are the two
-worked examples that use it.
-
-Every run follows the same three-step pattern:
-
-```python
-from calibration_methods import (
-    Datalogger_Processing, Scintillators_Processing, Detector_Analysis, set_results_dir
-)
-
-set_results_dir("roomtemp")   # optional: save plots + CSVs to ./roomtemp_results/
-
-# 1) datalogger → continuous Absolute Timer (handles timer resets)
-df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
-
-# 2) align each scintillator to the datalogger (deadtime-corrected livetime)
-proc = Scintillators_Processing([scint1_fp, scint2_fp, scint3_fp], df)
-
-# 3) calibrate + plot — pick ONE mode:
-analysis = Detector_Analysis(proc, df)
-analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
-# analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])                # or supply MPVs
-```
-
-Results live on the returned `analysis`: `analysis.master_df` (calibrated event
-dataframe) and `analysis.mpv_per_scint` (MPVs used).
-
-**The two example scripts show this pattern in context:**
-
-- **`CW_calibration_grounddata.py`** — runs the bench datasets (room-temp,
-  Cs-137, and temperature-varying fridge/freezer runs), extracts the reference
-  MPVs via Moyal fits, and builds the gain-vs-temperature calibration. Start
-  here to see the fitting workflow and how MPVs are established.
-- **`flight-data-analysis.py`** — takes the MPVs from the ground calibration,
-  trims the balloon run to the flight window, and analyzes it in time segments
-  with the fixed-MPV mode. Start here to see the flight workflow and the
-  segment-splitting helpers.
-
-Pass **either** `Moyal_fit_ranges` **or** `MPVs`.
-
-**Outputs:** the returned `analysis` holds `analysis.master_df` (the calibrated
-event dataframe) and `analysis.mpv_per_scint` (the MPVs used). With
-`set_results_dir(...)` set, plots and a `calibration_summary.csv` are written to
-`./<name>_results/`.
 
 ---
 

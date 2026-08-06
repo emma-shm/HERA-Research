@@ -9,35 +9,102 @@ from scipy.stats import linregress
 import os
 
 
-SAVE_PLOTS  = False        # off by default → methods still just .show()
-RESULTS_DIR = "plots"      # overwritten by set_results_dir()
+# SAVE_PLOTS  = False        # off by default → methods still just .show()
+# RESULTS_DIR = "plots"      # overwritten by set_results_dir()
 
+class PlotOutput:
+    """Save/show policy shared by Datalogger_Processing, Scintillators_Processing,
+    and Detector_Analysis. Subclasses call _init_output() in their __init__, then
+    end every figure with _finish_mpl() / _finish_plotly() instead of plt.show().
 
+    Two flags drive everything, set once in _init_output:
+        save_plots : True whenever results_dir is given (the directory is created then)
+        show_plots : None -> show only when not saving; True/False -> forced
+
+    Resulting behaviour:
+        results_dir given, show_plots=None/False  -> save only
+        results_dir given, show_plots=True        -> save and show
+        results_dir None,  show_plots=None/True   -> show only
+        results_dir None,  show_plots=False       -> no output at all; the
+            `if not (self.show_plots or self.save_plots): return` guards in
+            subplots(), plot_SiPM_histograms(), and plot_all_SiPM_distributions()
+            skip those figures entirely
+
+    Methods:
+        _init_output(results_dir, show_plots) : set the flags, mkdir if saving
+        _finish_mpl(fig, name)     : save (if name is not None), show, always close
+        _finish_plotly(fig, name)  : same, minus the close; needs kaleido to write PNG
+        _save_table(df, name)      : write a CSV; gated on save_plots only
+
+    Passing name=None to the _finish_* methods suppresses saving for that one
+    figure while leaving show behaviour intact — used by Datalogger_Processing.subplots()
+    so the raw Timer[S] plot is never written, only the Absolute Timer version.
+    """
+
+    def _init_output(self, results_dir=None, show_plots=None):
+        
+        # Called from each subclass's __init__. Sets the two flags every
+        # plotting method downstream reads: self.save_plots and self.show_plots.
+        self.results_dir = results_dir
+        self.save_plots  = results_dir is not None          # saving is implied by giving a directory
+        
+        # show_plots=None means "infer": show only if we're NOT saving.
+        # Passing True/False overrides that inference explicitly.
+        if show_plots is None:
+            show_plots = not self.save_plots      # default: show only when we're not saving
+        self.show_plots = bool(show_plots)
+        if self.save_plots:
+            os.makedirs(self.results_dir, exist_ok=True)    # create the folder up front, no-op if it exists
+            print(f"[plots] saving to {self.results_dir}/")
+
+    def _finish_mpl(self, fig, name=None):
+        # Terminal call for every matplotlib figure: save, show, close — in that order.
+        if self.save_plots and name is not None:            # name=None => figure is deliberately not saved
+            path = os.path.join(self.results_dir, f"{name}.png")
+            fig.savefig(path, dpi=150, bbox_inches='tight')
+            print(f"[saved] {path}")
+        if self.show_plots:
+            plt.show()
+        plt.close(fig)                                      # always close, so long loops don't leak figures
+
+    def _finish_plotly(self, fig, name=None):
+        # Same thing as _finish_mpl but for plotly, which I use for 2D histograms. No close() — plotly figures
+        # aren't held by a global figure manager the way matplotlib's are.
+        if self.save_plots and name is not None:
+            path = os.path.join(self.results_dir, f"{name}.png")
+            fig.write_image(path, scale=2)                  # static PNG export; needs kaleido installed
+            print(f"[saved] {path}")
+        if self.show_plots:
+            fig.show()
+
+    def _save_table(self, df, name):
+        # CSV counterpart to the figure writers. Gated on save_plots only —
+        # there's no "show" equivalent for a dataframe.
+        if self.save_plots:
+            path = os.path.join(self.results_dir, f"{name}.csv")
+            df.to_csv(path, index=False)
+            print(f"[saved] {path}")
 
 # ================== Main processing code ==================
-class Datalogger_Processing:
-    def __init__(self, filepath, show_plots=False, debug=False):
-      '''
-      Class for processing datalogger files. Detects timer resets in the datalogger file, and adds a column showing the absolute timer without any resets.
-      
-      Creates key dataframes used in the rest of the analysis/by the other classes:
+class Datalogger_Processing(PlotOutput):
+    def __init__(self, filepath, show_plots=None, debug=False, results_dir=None):
+        '''
+        Class for processing datalogger files. Detects timer resets in the datalogger file, and adds a column showing the absolute timer without any resets.
+
+        Creates key dataframes used in the rest of the analysis/by the other classes:
             - self.df: the raw datalogger dataframe, read from the CSV, with no processing yet
             - self.timerreset_segments: list of DataFrames, one per continuous run between timer resets
 
-      Arg:
+        Arg:
         filepath: string of filepath to datalogger CSV
-      '''
-      self.fp = filepath
+        '''
+        self.fp = filepath
+        self.fp_string = self.fp.split('/')[-1]
+        self.df = pd.read_csv(self.fp)
+        self.debug = debug
+        self._init_output(results_dir, show_plots)
 
-      self.fp_string = self.fp.split('/')[-1]
-
-      self.df = pd.read_csv(self.fp)
-
-      self.show_plots=show_plots
-
-      self.debug = debug
-
-    def process(self, plotting_title=None):
+    def process(self, plotting_title=None, name="datalogger_abs"):
       '''
       Full pipeline: plots raw data vs Timer[S], detects timer resets, creates continuous Absolute Timer (S) column,
       and plots everything again vs Absolute Timer (S). Returns self.df so it can be chained into one line.
@@ -45,15 +112,15 @@ class Datalogger_Processing:
       Usage: datalogger_df = Datalogger_Processing(fp).process()
       '''
       self.subplots()                                                  # initial plot with raw Timer[S]
-      self.separate_timer_resets(plotting_title=plotting_title)        # detects resets, builds Absolute Timer (S), re-plots vs it
+      self.separate_timer_resets(plotting_title=plotting_title, name=name) # detects resets, builds Absolute Timer (S), re-plots vs it
       print(f'Total run time: {self.df["Absolute Timer (S)"].max():.2f} s, or {self.df["Absolute Timer (S)"].max()/60:.2f} min')
       return self.df                                                   # return the fully-processed dataframe so caller can grab it directly
 
-    def subplots(self, xaxis='Timer[S]', title=None):
+    def subplots(self, xaxis='Timer[S]', title=None, name=None):
       '''
       Method for subplots of datalogger data, mostly just for visualization. Plots the number of events, pressure, and temperature vs the specified x-axis (Default is Absolute Timer (S)).
       '''
-      if not self.show_plots:                 # don't even build the figure
+      if not (self.show_plots or self.save_plots):
           return
       if title is None:
           title = self.fp_string
@@ -80,10 +147,10 @@ class Datalogger_Processing:
       axes[2].set_title('Temperature over Time')
 
       plt.suptitle(title)
-      finish_mpl(fig1, "datalogger_absolute")
-      plt.close(fig1)
+      self._finish_mpl(fig1, name)
+    #   plt.close(fig1)
 
-    def separate_timer_resets(self, plotting_title=None):
+    def separate_timer_resets(self, plotting_title=None, name="datalogger_abs"):
         '''
         Detect any timer resets in the datalogger data, and creates separate DataFrames for each run. Then creates an Absolute Timer column to add to the dataframe, and plots the data as a function of the absolute timer.
         '''
@@ -94,9 +161,9 @@ class Datalogger_Processing:
 
         time_col = 'Timer[S]'                                                    # name of the column that holds the timer values
 
-        reset_mask = self.df_sorted[time_col].diff() < -10                                # .diff() computes row-to-row differences; this creates a boolean mask that's True wherever the time decreased by more than 3 seconds (negative value indicates a reset/jump backward)
+        reset_mask = self.df_sorted[time_col].diff() < -10                                # .diff() computes row-to-row differences; this creates a boolean mask that's True wherever the time decreased by more than 10 seconds (negative value indicates a reset/jump backward)
 
-        new_segment_starts = [0] + (reset_mask[reset_mask].index).tolist()   # list of row numbers where each new segment begins: 0 + (index of each True + 1 to point to first row of next segment)
+        new_segment_starts = [0] + (reset_mask[reset_mask].index).tolist()
         print(f"Detected {len(new_segment_starts)-1} separate timer reset(s) at rows {new_segment_starts}")
 
         self.timerreset_segments = []                                                            # empty list that will store one DataFrame per continuous run
@@ -127,7 +194,7 @@ class Datalogger_Processing:
 
                 print(slice_df[[time_col, 'Events CW1&2', 'Events CW1&2&3', 'Absolute Timer (S)']].to_string(index=True))
 
-        self.subplots(xaxis='Absolute Timer (S)', title=plotting_title)
+        self.subplots(xaxis='Absolute Timer (S)', title=plotting_title, name=name)
 
 
     def create_absolute_timer(self):
@@ -151,9 +218,21 @@ class Datalogger_Processing:
 
       self.df['Absolute Timer (S)'] = absolute_timers
 
+    
+    # def _finish_mpl(self, fig, name=None):
+    #     save = getattr(self, 'save_plots', False)
+    #     show = getattr(self, 'show_plots', False)
+    #     if save and name is not None:
+    #         path = os.path.join(self.results_dir, f"{name}.png")
+    #         fig.savefig(path, dpi=150, bbox_inches='tight')
+    #         print(f"[saved] {path}")
+    #     if show or not save:
+    #         plt.show()
+    #     plt.close(fig)
 
-class Scintillators_Processing:
-    def __init__(self, filepaths, datalogger_df, show_plots=False, debug=False, results_dir=None):
+
+class Scintillators_Processing(PlotOutput):
+    def __init__(self, filepaths, datalogger_df, show_plots=None, debug=False, results_dir=None):
         '''
         Class for processing scintillator files, for any number of scintillators. Instantiate the class once with a list of filepaths for all scintillator TXT files and the datalogger dataframe from the Datalogger_Processing class.
         The class has the following key methods, all of which are executed immediately when the class is instantiated:
@@ -170,13 +249,7 @@ class Scintillators_Processing:
         '''
         self.fps = filepaths
         self.debug = debug
-        self.show_plots = show_plots
-
-        self.results_dir = results_dir
-        self.save_plots  = results_dir is not None
-        if self.save_plots:
-            os.makedirs(self.results_dir, exist_ok=True)
-            print(f"[plots] saving to {self.results_dir}/")
+        self._init_output(results_dir, show_plots)
 
         # Helpers for arbitrary-N coincidence naming
         n = len(filepaths)
@@ -246,8 +319,10 @@ class Scintillators_Processing:
         dl_df = datalogger_df.sort_values('Absolute Timer (S)').reset_index(drop=True)
 
         # Add columns to the datalogger dataframe giving the increase in double and triple coincidence events
-        dl_df['delta_CW12'] = (dl_df['Events CW1&2'].diff().clip(lower=0).fillna(0))
-        dl_df['delta_CW123'] = (dl_df['Events CW1&2&3'].diff().clip(lower=0).fillna(0))
+        for k in self.coinc_orders:
+            src = self._coinc_src_col(k)
+            tag = self._coinc_tag(k)
+            dl_df[f'delta_{tag}'] = dl_df[src].diff().clip(lower=0).fillna(0)
 
         # ── Independently align each scintillator ──────────────────────────
         for i in range(1, len(self.fps) + 1): # loop through the scintillators
@@ -298,12 +373,11 @@ class Scintillators_Processing:
                 f"{total_livetime_s:.2f} s")
 
             # ── Run-averaged rates ─────────────────────────────────────────
-            if total_livetime_s > 0:
-                cw12_rate = (aligned['delta_CW12'].fillna(0).sum()/ total_livetime_s) # calculate the average rate of double coincidence events by dividing the total number of double coincidence events recorded in the datalogger by the total livetime
-                cw123_rate = (aligned['delta_CW123'].fillna(0).sum()/ total_livetime_s) # same for triple coincidence events
-
-                print(f"Run-averaged CW1+2 rate:   {cw12_rate:.3f} s^-1")
-                print(f"Run-averaged CW1+2+3 rate: {cw123_rate:.3f} s^-1")
+            for k in self.coinc_orders:
+                tag = self._coinc_tag(k)                    # 2 -> 'CW12', 3 -> 'CW123'
+                label = '+'.join(str(j) for j in range(1, k + 1))   # 2 -> '1+2', 3 -> '1+2+3'
+                rate = aligned[f'delta_{tag}'].fillna(0).sum() / total_livetime_s
+                print(f"Run-averaged CW{label} rate: {rate:.3f} s^-1")
 
             # ── Per-order coincidence tagging ─────────────────────────────
             for k in self.coinc_orders:
@@ -343,7 +417,7 @@ class Scintillators_Processing:
         ax.legend(fontsize=11)
         plt.tight_layout()
         self._finish_mpl(fig, "sipm_all_scints")
-        plt.close(fig)
+        # plt.close(fig)
 
     def plot_SiPM_histograms(self, i, bins=100):
         if not (self.show_plots or self.save_plots):
@@ -381,26 +455,26 @@ class Scintillators_Processing:
         ax.legend(fontsize=11)
         plt.tight_layout()
         self._finish_mpl(fig, f"sipm_scint{i}")
-        plt.close(fig)
+        # plt.close(fig)
 
-    def _finish_mpl(self, fig, name):
-        if self.save_plots:
-            path = os.path.join(self.results_dir, f"{name}.png")
-            fig.savefig(path, dpi=150, bbox_inches='tight')
-            print(f"[saved] {path}")
-            plt.close(fig)
-        else:
-            plt.show()
-
-
+    # def _finish_mpl(self, fig, name):
+    #     if self.save_plots:
+    #         path = os.path.join(self.results_dir, f"{name}.png")
+    #         fig.savefig(path, dpi=150, bbox_inches='tight')
+    #         print(f"[saved] {path}")
+    #         plt.close(fig)
+    #     else:
+    #         plt.show()
 
 
 
 
 
 
-class Detector_Analysis:
-    def __init__(self, processor, datalogger_df, debug=True, results_dir=None):
+
+
+class Detector_Analysis(PlotOutput):
+    def __init__(self, processor, datalogger_df, debug=False, results_dir=None, show_plots=None):
         '''
         Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run. Pass a filepath for results_dir in order for results to be saved class-wide, otherwise results just appear in interactive window.
         This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs, and has the following methods:
@@ -426,11 +500,7 @@ class Detector_Analysis:
                 - self.master_df       : master dataframe on the datalogger timeline, with all normalized/calibrated/cross-scint columns; set in build_master_df
                 - self.mpv_per_scint, self.global_mean_mpv, self.amp_shifts : per-scint MPVs, their mean, and the per-scint mV shifts used for amplitude calibration; set in build_master_df
         '''
-        self.results_dir = results_dir
-        self.save_plots  = results_dir is not None # setting class-wide flag for whether to save plots or just show them interactively, based on if results directory is provided
-        if self.save_plots:
-            os.makedirs(self.results_dir, exist_ok=True)
-            print(f"[plots] saving to {self.results_dir}/")
+        self._init_output(results_dir, show_plots)
 
         self.processor = processor
         self.datalogger_df = datalogger_df
@@ -443,7 +513,7 @@ class Detector_Analysis:
 
         self.debug = debug
 
-    def calibrate_and_analyze_grounddata(self, moyal_fit_ranges=None, twodim_hist_args=None):
+    def calibrate_and_analyze_grounddata(self, moyal_fit_ranges=None, twodim_hist_args=None, noise_threshold=0.1):
         """
         Fit a Moyal distribution per scintillator to determine and extract the MPV, then run the full pipeline using those fitted MPVS.
 
@@ -457,7 +527,7 @@ class Detector_Analysis:
             raise ValueError("moyal_fit_ranges not set — pass it to this method or set self.moyal_fit_ranges first.")
 
         self.plot_rate_spectra_preview(self.moyal_fit_ranges)
-        self._run_pipeline(twodim_hist_args=twodim_hist_args)
+        self._run_pipeline(twodim_hist_args=twodim_hist_args, noise_threshold=noise_threshold)
 
     def analyze_calibrated_data_with_fixed_MPVs(self, MPVs, noise_threshold=0.1, mip_window=(0.8, 1.2), twodim_hist_args=None):
         """
@@ -474,7 +544,6 @@ class Detector_Analysis:
                             e.g. {'col': 'MIP_ampcal', 'cbar_max': 300e-6}. If None, uses
                             two_dimensional_histograms' own defaults (col='MIP', cbar_max=None).
         """
-        self.noise_threshold = noise_threshold
         self.plot_rate_spectra_preview()
         self._run_pipeline(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window, twodim_hist_args=twodim_hist_args)
 
@@ -593,7 +662,7 @@ class Detector_Analysis:
         # self._save_table(master, "master_df")
         n = len(self.processor.fps)
         self._save_summary({
-            "total_event_rate":        self.datalogger_df['Events CW1&2&3'].sum() / self.datalogger_df['Absolute Timer (S)'].max(),
+            f"{self.processor.top_tag}_rate_hz":        master[f'delta_{self.processor.top_tag}'].sum() / self._mean_livetime(),
             "mpv_per_scint":        self.mpv_per_scint,
             "global_mean_mpv":      self.global_mean_mpv,
             "amp_shifts":           self.amp_shifts,
@@ -795,7 +864,7 @@ class Detector_Analysis:
         colors = ['teal', 'darkorange', 'steelblue']
         colors_dim = ['lightgray', 'bisque', 'lightblue']
 
-        i=0
+        # i=0
         for scint_idx, ax in enumerate(axes):
             s = stored[scint_idx]
             if s['popt'] is None:          # real fit failure only; no_fit sets popt=[mpv]
@@ -828,7 +897,7 @@ class Detector_Analysis:
                 transform=ax.get_xaxis_transform(),
                 fontsize=10, color=colors[scint_idx % len(colors)],
                 rotation=90, va='center')
-            ax.axhline(1.0, color='black', linestyle='--', linewidth=0.8, alpha=0.5)
+            # ax.axhline(1.0, color='black', linestyle='--', linewidth=0.8, alpha=0.5)
 
             ax.set_xscale('linear')
             ax.set_yscale('log')
@@ -838,8 +907,8 @@ class Detector_Analysis:
             ax.set_title(f'Scintillator {scint_idx+1}: 1 MIP = {mpv:.1f} mV', fontsize=13)
             ax.grid(True, which='both', linestyle='--', alpha=0.4)
             ax.legend(fontsize=10)
-            i+=1
-        axes[0].set_ylabel('Rate / Moyal Peak', fontsize=12)
+            # i+=1
+        axes[0].set_ylabel(r'Rate/bin [s$^{-1}$]', fontsize=12) #axes[0].set_ylabel('Rate / Moyal Peak', fontsize=12)
         plt.tight_layout()
         self._finish_mpl(fig, "mip_normalized")
 
@@ -1089,8 +1158,8 @@ class Detector_Analysis:
 
         tag = self.coinc_tag
         coinc_label = '&'.join(str(i) for i in range(1, n + 1))
-        mv_col  = f"SiPM_mV_{tag}_scint1"
-        mip_col = f"SiPM_MIP_{tag}_scint1" # choosing scint1 arbitrarily for the x-axis, since all scints are MIP-normalized and should be comparable
+        # mv_col  = f"SiPM_mV_{tag}_scint1"
+        # mip_col = f"SiPM_MIP_{tag}_scint1" # choosing scint1 arbitrarily for the x-axis, since all scints are MIP-normalized and should be comparable
 
         avg_col, std_col = f"SiPM_scints_avg_{col}", f"SiPM_scints_std_{col}"
         cal_label = {'MIP': 'MIP-normalized', 'MIP_ampcal': 'amplitude-calibrated MIP',
@@ -1105,6 +1174,8 @@ class Detector_Analysis:
 
         # ── DEBUG: overview of master + the columns each plot needs ──────
         if self.debug:
+            mv_col  = f"SiPM_mV_{tag}_scint1"   # scint1 chosen arbitrarily; all scints are MIP-normalized
+            mip_col = f"SiPM_MIP_{tag}_scint1"
             print("=" * 70)
             print(f"DEBUG two_dimensional_histograms | master rows: {len(master)} | min_mip={min_mip}")
             for c in [mv_col, mip_col, avg_col, "SiPM_scints_std", std_col]:
@@ -1126,8 +1197,6 @@ class Detector_Analysis:
         
         if cbar_max is not None:
             range_color = (0, cbar_max)
-        elif col == 'MIP':
-            range_color = (0, 500e-6)   # preserve original fixed default
         else:
             range_color = None
 
@@ -1135,7 +1204,8 @@ class Detector_Analysis:
             sub_avg,
             x=avg_col,
             y=std_col,
-            z="_rate_weight", histfunc="sum",
+            # z="_rate_weight",
+            histfunc="sum",
             nbinsx=50, nbinsy=50, width=800, height=600, range_color=range_color,
             color_continuous_scale="Inferno",
             labels={
@@ -1143,9 +1213,11 @@ class Detector_Analysis:
                 std_col: f"Std across {n} scints [MIP]",
             },
             title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean ({cal_label})<br>"
-                   f"(N={len(sub_avg)} events, rate-normalized by livetime = {livetime:.1f} s)"),
+                   f"(N={len(sub_avg)} events)"),
+                #    f"(N={len(sub_avg)} events, rate-normalized by livetime = {livetime:.1f} s)"),
         )
-        fig_mip.update_coloraxes(colorbar_title="Normalized Counts")
+        fig_mip.update_coloraxes(colorbar_title="Counts")
+        # fig_mip.update_coloraxes(colorbar_title="Normalized Counts")
         self._finish_plotly(fig_mip, "density_heatmap")
 
         # ── Additional: raw mV (not MIP-normalized) — mean vs spread ─────
@@ -1213,12 +1285,13 @@ class Detector_Analysis:
 
         avg_raw, std_raw = "SiPM_scints_avg_MIP",     "SiPM_scints_std_MIP"
         avg_cal, std_cal = "SiPM_scints_avg_MIP_ampcal", "SiPM_scints_std_MIP_ampcal"
-        mip_cols = [f"SiPM_MIP_{tag}_scint{i}" for i in range(1, n + 1)]
 
         # ── Shared row filter ────────────────────────────────────────────
-        master = master[(master[mip_cols] >= min_mip).all(axis=1)] # Stricter than two_dimensional_histograms(): requires ALL scints individually
-                                                                    # >= min_mip, not just the average — a per-channel noise cut rather than a
-                                                                    # mean-based one, making it a more selective cut of the data
+        master = master[master[avg_raw] >= min_mip] # same data cut as the non-zoomed 2D histogram
+        # mip_cols = [f"SiPM_MIP_{tag}_scint{i}" for i in range(1, n + 1)]
+        # master = master[(master[mip_cols] >= min_mip).all(axis=1)] # Stricter than two_dimensional_histograms(): requires ALL scints individually
+        #                                                             # >= min_mip, not just the average — a per-channel noise cut rather than a
+        #                                                             # mean-based one, making it a more selective cut of the data
 
         # ── Zoom window: explicit if given, else auto from fit ranges ────
         # mip_window lets the fixed-MPV (no-fit) path supply the zoom directly, since
@@ -1274,23 +1347,27 @@ class Detector_Analysis:
 
         h_raw = go.Histogram2d(
             x=master[avg_raw], y=master[std_raw],
-            z=w, histfunc="sum",
-            nbinsx=50, nbinsy=50,
-            colorscale="Inferno", zmin=0, zmax=200e-6,
+            #z=w,
+            histfunc="sum",
+            nbinsx=20, nbinsy=20,
+            colorscale="Inferno", zmin=0, #zmax=200e-6,
             xbins=dict(start=x_range[0], end=x_range[1]),
             ybins=dict(start=y_range[0], end=y_range[1]),
-            colorbar=dict(title="Rate [s⁻¹]", x=0.43),
+            colorbar=dict(title="Counts", x=0.455, len=0.9),
+            # colorbar=dict(title="Rate [s⁻¹]", x=1.0),
         )
         fig.add_trace(h_raw, row=1, col=1)
 
         h_cal = go.Histogram2d(
             x=master[avg_cal], y=master[std_cal],
-            z=w, histfunc="sum",
-            nbinsx=50, nbinsy=50,
-            colorscale="Inferno", zmin=0, zmax=200e-6,
+            #z=w,
+            histfunc="sum",
+            nbinsx=20, nbinsy=20,
+            colorscale="Inferno", zmin=0, #zmax=200e-6,
             xbins=dict(start=x_range[0], end=x_range[1]),
             ybins=dict(start=y_range[0], end=y_range[1]),
-            colorbar=dict(title="Rate [s⁻¹]", x=1.0),
+            colorbar=dict(title="Counts", x=1.02, len=0.9),
+            # colorbar=dict(title="Rate [s⁻¹]", x=1.0),
         )
         fig.add_trace(h_cal, row=1, col=2)
 
@@ -1303,9 +1380,9 @@ class Detector_Analysis:
             width=1300, height=600,
             title_text=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean "
                         f"— uncalibrated vs amplitude-calibrated  "
-                        f"(N={len(master)} events, all scints ≥ {min_mip} MIP)"),
+                        f"(N={len(master)} events, avg scints ≥ {min_mip} MIP)"),
         )
-        self._finish_plotly(fig, "std_heatmap")
+        self._finish_plotly(fig, "MIP_heatmap")
 
     # ------------ ALL SCINTS: Plotting All events, No coincidence events, and coincidence events WITH error ------------
     def fill_between_steps(self, x, y1, y2=0, h_align='mid', ax=None, lw=2, **kwargs):
@@ -1480,13 +1557,13 @@ class Detector_Analysis:
             # rate_all is zero (which would otherwise raise a divide-by-zero warning and
             # produce inf/NaN). In those bins the ratio is set to 0 instead.
             for rate, err, c in zip(
-                [rate_no_coinc, rate_coinc],
-                [err_no_coinc, err_coinc],
-                ['darkorange', 'steelblue']
-            ):
+                                    [rate_no_coinc, rate_coinc],
+                                    [err_no_coinc, err_coinc],
+                                    ['darkorange', 'steelblue']):
                 upper = np.divide(rate + err, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
                 lower = np.divide(rate - err, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
-                ax.stairs(rate, bin_edges, color=c, linewidth=1.5)
+                central = np.divide(rate, rate_all, out=np.zeros_like(rate), where=rate_all != 0)
+                ax2.stairs(central, bin_edges, color=c, linewidth=1.5)
                 self.fill_between_steps(bin_centers, upper, lower, color=c, alpha=0.7, ax=ax2)
 
             # Reference line at ratio = 1 (i.e. that population = all events in that bin).
@@ -1504,28 +1581,78 @@ class Detector_Analysis:
         self._finish_mpl(fig, "rate_spectra")
 
 
-    def _finish_mpl(self, fig, name):
-        if self.save_plots:
-            path = os.path.join(self.results_dir, f"{name}.png")
-            fig.savefig(path, dpi=150, bbox_inches='tight')
-            print(f"[saved] {path}")
-            plt.close(fig)
-        else:
-            plt.show()
+def process_run(datalogger_fp, scint_fps, moyal_fit_ranges=None, MPVs=None,
+                results_dir=None, save_all=False, show_plots=False,
+                debug=False, dl_name="datalogger_abs", **method_kwargs):
+    '''
+    Run the full Datalogger_Processing -> Scintillators_Processing -> Detector_Analysis
+    chain in one call, dispatching to the calibration or fixed-MPV pipeline.
 
-    def _finish_plotly(self, fig, name):
-        if self.save_plots:
-            path = os.path.join(self.results_dir, f"{name}.png")
-            fig.write_image(path, scale=2)
-            print(f"[saved] {path}")
-        else:
-            fig.show()
+    Exactly one of moyal_fit_ranges / MPVs must be given:
+        moyal_fit_ranges -> CALIBRATION RUN, calls calibrate_and_analyze_grounddata()
+        MPVs             -> ANALYSIS RUN,    calls analyze_calibrated_data_with_fixed_MPVs()
 
-    def _save_table(self, df, name):
-        if self.save_plots:
-            path = os.path.join(self.results_dir, f"{name}.csv")
-            df.to_csv(path, index=False)
-            print(f"[saved] {path}")
+    Args:
+        datalogger_fp    : path to the datalogger CSV
+        scint_fps        : list of scintillator TXT paths, ordered scint1..scintN
+        moyal_fit_ranges : list of (min, max) mV fit windows per scint
+        MPVs             : list of per-scint MPVs in mV from a prior calibration
+        results_dir      : where Detector_Analysis writes its figures/summary
+        save_all         : if True, results_dir is also given to Datalogger_Processing
+                           and Scintillators_Processing, so their plots are saved too;
+                           if False (default) only the analysis figures are written
+        show_plots       : forwarded to both upstream classes. Default False, which
+                           with save_all=False means their plots are suppressed entirely
+        dl_name          : filename stem for the Absolute Timer datalogger figure
+        **method_kwargs  : passed straight to whichever terminal method is dispatched
+                           (noise_threshold, twodim_hist_args; mip_window is valid on
+                           the fixed-MPV path only)
+
+    Returns:
+        (datalogger_df, processor, analysis) — analysis still carries master_df,
+        mpv_per_scint, global_mean_mpv, etc. for chaining into a later run.
+    '''
+    if (moyal_fit_ranges is None) == (MPVs is None):
+        raise ValueError("Pass exactly one of moyal_fit_ranges or MPVs.")
+
+    upstream_dir = results_dir if save_all else None
+
+    df        = Datalogger_Processing(datalogger_fp, show_plots=show_plots, debug=debug,
+                                      results_dir=upstream_dir).process(name=dl_name)
+    processor = Scintillators_Processing(scint_fps, df, show_plots=show_plots, debug=debug,
+                                         results_dir=upstream_dir)
+    analysis  = Detector_Analysis(processor, df, debug=debug, results_dir=results_dir)
+
+    if moyal_fit_ranges is not None:
+        analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=moyal_fit_ranges, **method_kwargs)
+    else:
+        analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=MPVs, **method_kwargs)
+
+    return df, processor, analysis
+
+
+    # def _finish_mpl(self, fig, name):
+    #     if self.save_plots:
+    #         path = os.path.join(self.results_dir, f"{name}.png")
+    #         fig.savefig(path, dpi=150, bbox_inches='tight')
+    #         print(f"[saved] {path}")
+    #         plt.close(fig)
+    #     else:
+    #         plt.show()
+
+    # def _finish_plotly(self, fig, name):
+    #     if self.save_plots:
+    #         path = os.path.join(self.results_dir, f"{name}.png")
+    #         fig.write_image(path, scale=2)
+    #         print(f"[saved] {path}")
+    #     else:
+    #         fig.show()
+
+    # def _save_table(self, df, name):
+    #     if self.save_plots:
+    #         path = os.path.join(self.results_dir, f"{name}.csv")
+    #         df.to_csv(path, index=False)
+    #         print(f"[saved] {path}")
 
     def _save_summary(self, d, name):
         if self.save_plots:
@@ -1542,64 +1669,6 @@ class Detector_Analysis:
             rows["noise_threshold"]    = d["noise_threshold"]
             rows.to_csv(path, index=False)
             print(f"[saved] {path}") 
-
-# ================== Helper functions for saving data ==================
-def set_results_dir(name=None):
-    """Call once before processing. Makes ./<name>_results/ and turns on saving."""
-    global RESULTS_DIR, SAVE_PLOTS
-    if name is None:
-        name = input("Name for this dataset (e.g. may31flight): ").strip()
-    RESULTS_DIR = f"{name}_results"
-    SAVE_PLOTS  = True
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    print(f"[plots] saving to ./{RESULTS_DIR}/")
-    return RESULTS_DIR
-
-def finish_mpl(fig, name):
-    """Save a matplotlib fig to RESULTS_DIR if saving is on, else show it."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.png")
-        fig.savefig(path, dpi=150, bbox_inches='tight')
-        print(f"[saved] {path}")
-        plt.close(fig)
-    else:
-        plt.show()
-
-def finish_plotly(fig, name):
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.png")
-        fig.write_image(path, scale=2)   # scale=2 ≈ 2x resolution
-        print(f"[saved] {path}")
-    else:
-        fig.show()
-
-def save_table(df, name):
-    """Save a DataFrame to RESULTS_DIR as CSV when saving is on."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.csv")
-        df.to_csv(path, index=False)
-        print(f"[saved] {path}")
-
-def save_summary(d, name):
-    """Save fit constants as a per-scintillator CSV (reloadable) when saving is on."""
-    if SAVE_PLOTS:
-        os.makedirs(RESULTS_DIR, exist_ok=True)
-        path = os.path.join(RESULTS_DIR, f"{name}.csv")
-        n = len(d["mpv_per_scint"])
-        rows = pd.DataFrame({
-            "scint":        list(range(1, n + 1)),
-            "mpv_mV":       [float(d["mpv_per_scint"][i]) for i in range(1, n + 1)],
-            "amp_shift_mV": [float(x) for x in d["amp_shifts"]],
-            "livetime_s":   [float(x) if x is not None else float("nan")
-                             for x in d["livetime_s_per_scint"]],
-        })
-        rows["global_mean_mpv_mV"] = float(d["global_mean_mpv"])
-        rows["noise_threshold"]    = d["noise_threshold"]
-        rows.to_csv(path, index=False)
-        print(f"[saved] {path}")
 
 # # ================== Helper functions for plotting in other scripts ==================
 # def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetime=True, cbar_max=None):
