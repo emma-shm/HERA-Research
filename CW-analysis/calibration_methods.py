@@ -98,6 +98,7 @@ class Datalogger_Processing(PlotOutput):
         Arg:
         filepath: string of filepath to datalogger CSV
         '''
+        print(f"================== Initializing Datalogger Processing ==================")
         self.fp = filepath
         self.fp_string = self.fp.split('/')[-1]
         self.df = pd.read_csv(self.fp)
@@ -247,6 +248,7 @@ class Scintillators_Processing(PlotOutput):
             filepaths: list of filepath strings for each scintillator TXT
             datalogger_df: datalogger dataframe from Datalogger_Processing() class (with Absolute Timer column already created)
         '''
+        print(f"================== Initializing Scintillator Files Processing ==================")
         self.fps = filepaths
         self.debug = debug
         self._init_output(results_dir, show_plots)
@@ -479,10 +481,10 @@ class Detector_Analysis(PlotOutput):
         Class for analyzing the CosmicWatch data after the Datalogger_Processing() and Scintillator_Processing() classes have been run. Pass a filepath for results_dir in order for results to be saved class-wide, otherwise results just appear in interactive window.
         This class takes the datalogger dataframe and the instance of the Scintillators_Processing class as inputs, and has the following methods:
 
-            Two top-level pipelines (call one of these directly; each runs the full analysis/plotting chain):
-                - calibrate_and_analyze_grounddata(moyal_fit_ranges): fits a Moyal distribution per scintillator to extract the MPV, then runs the full chain using those fitted MPVs
-                - analyze_calibrated_data_with_fixed_MPVs(MPVs, noise_threshold, mip_window): same chain, but uses externally supplied per-scint MPVs (e.g. from a prior ground/temperature calibration) instead of fitting; no Moyal fit is performed, so the dashed fit curve is absent from every panel
-
+            One top-level pipeline (call this directly; it runs the full analysis/plotting chain):
+                - run(MPVs=..., moyal_fit_ranges=...): pass moyal_fit_ranges for a CALIBRATION run (fits a Moyal per scintillator to extract each MPV); pass MPVs for an ANALYSIS run using externally supplied MPVs, where no fit is performed so the dashed Moyal curve is absent from every panel. Everything downstream is identical.    
+        
+                
             Methods blocks called by the pipelines above:
                 - build_master_df(tolerance, MPVs): builds a master dataframe anchored on the datalogger timeline, merging each scintillator onto it independently by nearest-neighbour timestamp. Adds MIP-normalized, amplitude-calibrated, and cross-scintillator mean/std columns; also computes and stores the calibration constants (global_mean_mpv, amp_shifts) that the plotting methods read back
                 - fit_moyal(centers, rates, fit_x_min, fit_x_max, fit_x_n): fits a Moyal distribution to a single rate spectrum, returning the fit curve, a legend label, and the (MPV, eta, A) parameters (or None on failure)
@@ -500,6 +502,7 @@ class Detector_Analysis(PlotOutput):
                 - self.master_df       : master dataframe on the datalogger timeline, with all normalized/calibrated/cross-scint columns; set in build_master_df
                 - self.mpv_per_scint, self.global_mean_mpv, self.amp_shifts : per-scint MPVs, their mean, and the per-scint mV shifts used for amplitude calibration; set in build_master_df
         '''
+        print(f"================== Initializing Detector Analysis ==================")
         self._init_output(results_dir, show_plots)
 
         self.processor = processor
@@ -513,49 +516,53 @@ class Detector_Analysis(PlotOutput):
 
         self.debug = debug
 
-    def calibrate_and_analyze_grounddata(self, moyal_fit_ranges=None, twodim_hist_args=None, noise_threshold=0.1):
+    def run(self, MPVs=None, moyal_fit_ranges=None, noise_threshold=0.1, mip_window=None, twodim_hist_args=None):
         """
-        Fit a Moyal distribution per scintillator to determine and extract the MPV, then run the full pipeline using those fitted MPVS.
+        Single entry point for the full analysis/plotting chain.
 
-        twodim_hist_args : optional dict passed through to two_dimensional_histograms,
-                            e.g. {'col': 'MIP_ampcal', 'cbar_max': 300e-6}. If None, uses
-                            two_dimensional_histograms' own defaults (col='MIP', cbar_max=None).
+        Pass exactly one of:
+            moyal_fit_ranges : CALIBRATION RUN — fits a Moyal per scintillator to
+                               extract each MPV, then runs the chain on those fits.
+            MPVs             : ANALYSIS RUN — uses externally supplied per-scint MPVs
+                               (e.g. from a prior ground/temperature calibration).
+                               No fit is performed, so the dashed Moyal curve is
+                               absent from every panel; everything else is identical.
+
+        noise_threshold  : MIP threshold separating noise from signal.
+        mip_window       : (lo, hi) MIP zoom for MIPregion_two_dimensional_histograms.
+                           None means fit-derived zoom on a calibration run, (0.8, 1.2) on an analysis run.
+        twodim_hist_args : optional dict forwarded to two_dimensional_histograms;
+                           reads 'col', 'cbar_max', 'range_x', 'range_y'. Other keys
+                           are silently ignored. Each defaults to None (autoscale)
+                           except 'col', which defaults to 'MIP'.
         """
+        if (moyal_fit_ranges is None) == (MPVs is None):
+            raise ValueError("Pass exactly one of moyal_fit_ranges or MPVs.")
+        
+        if mip_window is None and MPVs is not None:
+            mip_window = (0.8, 1.2)
+
+        # if user opts to pass moyal_fit_ranges, then the class attribute is set to those ranges
         if moyal_fit_ranges is not None:
             self.moyal_fit_ranges = moyal_fit_ranges
-        if self.moyal_fit_ranges is None:
-            raise ValueError("moyal_fit_ranges not set — pass it to this method or set self.moyal_fit_ranges first.")
 
-        self.plot_rate_spectra_preview(self.moyal_fit_ranges)
-        self._run_pipeline(twodim_hist_args=twodim_hist_args, noise_threshold=noise_threshold)
+        # if user opts to pass moyal_fit_ranges, then the plot_rate_spectra_preview method is called to plot the rate spectra with the Moyal fits overlaid
+        # plot_rate_spectra_preview skips the Moyal fit and draws the spectra without the dashed overlay
+        self.plot_rate_spectra_preview(moyal_fit_ranges)
 
-    def analyze_calibrated_data_with_fixed_MPVs(self, MPVs, noise_threshold=0.1, mip_window=(0.8, 1.2), twodim_hist_args=None):
-        """
-        Same full plotting pipeline as calibrate_and_analyze_grounddata, but using externally
-        supplied per-scint MPVs (e.g. from a prior ground/temperature calibration)
-        instead of fitting a Moyal per run. No fit is performed → the dashed Moyal
-        curve is absent from every panel; everything else (rate spectra, MIP rescaling,
-        amp + rate calibration, density + std heatmaps) is produced identically.
-
-        MPVs             : list of per-scint MPVs in mV, ordered scint1..scintN
-        mip_window       : (lo, hi) MIP zoom window for the std heatmaps, replacing the
-                            fit-range auto-zoom (which needs a fit to derive).
-        twodim_hist_args : optional dict passed through to two_dimensional_histograms,
-                            e.g. {'col': 'MIP_ampcal', 'cbar_max': 300e-6}. If None, uses
-                            two_dimensional_histograms' own defaults (col='MIP', cbar_max=None).
-        """
-        self.plot_rate_spectra_preview()
-        self._run_pipeline(MPVs=MPVs, noise_threshold=noise_threshold, mip_window=mip_window, twodim_hist_args=twodim_hist_args)
-
-    def _run_pipeline(self, MPVs=None, noise_threshold=0.1, mip_window=None, twodim_hist_args=None):
         self.fit_and_normalize_spectra(MPVs=MPVs, noise_threshold=noise_threshold, no_fit=(MPVs is not None))
         self.build_master_df(MPVs=MPVs)
         self.calibration_comparison()
+
         if twodim_hist_args is None:
             twodim_hist_args = {}
-        col      = twodim_hist_args.get('col', 'MIP')
-        cbar_max = twodim_hist_args.get('cbar_max', None)
-        self.two_dimensional_histograms(col=col, cbar_max=cbar_max)
+        self.two_dimensional_histograms(
+            col      = twodim_hist_args.get('col', 'MIP'),
+            cbar_max = twodim_hist_args.get('cbar_max', None),
+            range_x  = twodim_hist_args.get('range_x', None),
+            range_y  = twodim_hist_args.get('range_y', None),
+        )
+        
         self.MIPregion_two_dimensional_histograms(mip_window=mip_window)
 
     def build_master_df(self, tolerance=0.5, MPVs=None):
@@ -656,9 +663,10 @@ class Detector_Analysis(PlotOutput):
 
         self.master_df = master
         self.mpv_per_scint = mpv_per_scint
-        print(f"Master dataframe shape: {master.shape}")
         print(f"MPVs used: {mpv_per_scint}")
-        print(f"Columns: {master.columns.tolist()}")
+        if self.debug:
+            print(f"Master dataframe shape: {master.shape}")
+            print(f"Columns: {master.columns.tolist()}")
         # self._save_table(master, "master_df")
         n = len(self.processor.fps)
         self._save_summary({
@@ -795,8 +803,7 @@ class Detector_Analysis(PlotOutput):
         Note:
             Downstream methods (build_master_df, calibration_comparison,
             two_dimensional_histograms, MIPregion_two_dimensional_histograms) all read
-            self.scintillator_moyal_fit_results, so this must run before any of them — _run_pipeline()
-            already enforces that ordering.
+            self.scintillator_moyal_fit_results, so this must run before any of them
         '''
         if not no_fit:
             if moyal_fit_ranges is not None:
@@ -961,7 +968,7 @@ class Detector_Analysis(PlotOutput):
         mpvs = [stored[i]['popt'][0] for i in range(x)]            # per-scint MIP divisor for the plot rescaling (≠ global_mean_mpv)
         print(f"MPVs for each scintillator: {mpvs}")
         print(f"Global mean MPV: {global_mean_mpv}")
-        print(f"Amplitude shifts: {amp_shifts}")
+        # print(f"Amplitude shifts: {amp_shifts}")
 
         colors      = ['teal', 'darkorange', 'steelblue']
         colors_dim  = ['lightgray', 'bisque', 'lightblue']
@@ -1131,7 +1138,7 @@ class Detector_Analysis(PlotOutput):
         plt.tight_layout()
         self._finish_mpl(fig, "calibration_comparison")
 
-    def two_dimensional_histograms(self, col='MIP', cbar_max=None):
+    def two_dimensional_histograms(self, col='MIP', cbar_max=None, range_x=None, range_y=None):
         '''
         Wide-view 2D density heatmap: cross-scintillator spread (std) vs. mean amplitude, MIP-normalized, across the FULL amplitude range (no zoom).
 
@@ -1144,7 +1151,8 @@ class Detector_Analysis(PlotOutput):
         Args:
             col      : str, suffix of the columns to use (e.g. 'MIP', 'MIP_ampcal', or 'MIP_Tcal'); defaults to 'MIP' (uncalibrated) ie. if you want a 2D histogram of the regular MIP amplitudes, use the default; if you want a 2D histogram of the amplitude-calibrated MIP amplitudes, use 'MIP_ampcal'
             cbar_max : optional fixed upper bound for the colorbar; if None, uses the original fixed 500e-6 default for col='MIP', else auto-scales
-        
+            range_x : optional (min, max) for the x-axis; if None, uses the default range of MIP values in the dataset
+            range_y : optional (min, max) for the y-axis; if None, uses the default range of std values in the dataset
         '''
         if not hasattr(self, 'master_df'):
             raise ValueError("master_df not set — run build_master_df() first.")
@@ -1190,7 +1198,7 @@ class Detector_Analysis(PlotOutput):
         # as long as the mean clears it. Contrast with MIPregion_two_dimensional_histograms(),
         # which requires EVERY scint individually >= min_mip.
         sub_avg = master[master[avg_col] >= min_mip].copy() # slicing the master df to only include the rows where the average MIP amplitude across all three scints is above threshold
-        sub_avg["_rate_weight"] = 1.0 / livetime
+        # sub_avg["_rate_weight"] = 1.0 / livetime
         print(f"[MIP avg]  rows with {avg_col} >= {min_mip}: {len(sub_avg)}")
         print(f"           of those, finite {std_col} (y-axis): "
               f"{sub_avg[std_col].notna().sum()}")
@@ -1207,6 +1215,7 @@ class Detector_Analysis(PlotOutput):
             # z="_rate_weight",
             histfunc="sum",
             nbinsx=50, nbinsy=50, width=800, height=600, range_color=range_color,
+            range_x=range_x, range_y=range_y,
             color_continuous_scale="Inferno",
             labels={
                 avg_col: f"Mean across {n} scints [MIP]",
@@ -1218,7 +1227,10 @@ class Detector_Analysis(PlotOutput):
         )
         fig_mip.update_coloraxes(colorbar_title="Counts")
         # fig_mip.update_coloraxes(colorbar_title="Normalized Counts")
+        fig_mip.update_layout(plot_bgcolor='black')
         self._finish_plotly(fig_mip, "density_heatmap")
+        # if not self.show_plots:
+        #     fig_mip.show()
 
         # ── Additional: raw mV (not MIP-normalized) — mean vs spread ─────
         min_mv = min_mip * self.global_mean_mpv   # convert MIP noise threshold to mV so both plots filter consistently
@@ -1453,7 +1465,8 @@ class Detector_Analysis(PlotOutput):
 
             old = (~(df[self.coinc_col] > 0)).sum()
             new = (~any_coinc_mask).sum()
-            print(f"non-coinc events: old={old}, new={new}, removed by adding doubles={old-new}")
+            if self.debug:
+                print(f"non-coinc events: old={old}, new={new}, removed by adding doubles={old-new}")
 
 
             # ── Build log-spaced histogram bins ──────────────────────────────
@@ -1580,80 +1593,6 @@ class Detector_Analysis(PlotOutput):
         plt.tight_layout()
         self._finish_mpl(fig, "rate_spectra")
 
-
-def process_run(datalogger_fp, scint_fps, moyal_fit_ranges=None, MPVs=None,
-                results_dir=None, save_all=False, show_plots=False,
-                debug=False, dl_name="datalogger_abs", **method_kwargs):
-    '''
-    Run the full Datalogger_Processing -> Scintillators_Processing -> Detector_Analysis
-    chain in one call, dispatching to the calibration or fixed-MPV pipeline.
-
-    Exactly one of moyal_fit_ranges / MPVs must be given:
-        moyal_fit_ranges -> CALIBRATION RUN, calls calibrate_and_analyze_grounddata()
-        MPVs             -> ANALYSIS RUN,    calls analyze_calibrated_data_with_fixed_MPVs()
-
-    Args:
-        datalogger_fp    : path to the datalogger CSV
-        scint_fps        : list of scintillator TXT paths, ordered scint1..scintN
-        moyal_fit_ranges : list of (min, max) mV fit windows per scint
-        MPVs             : list of per-scint MPVs in mV from a prior calibration
-        results_dir      : where Detector_Analysis writes its figures/summary
-        save_all         : if True, results_dir is also given to Datalogger_Processing
-                           and Scintillators_Processing, so their plots are saved too;
-                           if False (default) only the analysis figures are written
-        show_plots       : forwarded to both upstream classes. Default False, which
-                           with save_all=False means their plots are suppressed entirely
-        dl_name          : filename stem for the Absolute Timer datalogger figure
-        **method_kwargs  : passed straight to whichever terminal method is dispatched
-                           (noise_threshold, twodim_hist_args; mip_window is valid on
-                           the fixed-MPV path only)
-
-    Returns:
-        (datalogger_df, processor, analysis) — analysis still carries master_df,
-        mpv_per_scint, global_mean_mpv, etc. for chaining into a later run.
-    '''
-    if (moyal_fit_ranges is None) == (MPVs is None):
-        raise ValueError("Pass exactly one of moyal_fit_ranges or MPVs.")
-
-    upstream_dir = results_dir if save_all else None
-
-    df        = Datalogger_Processing(datalogger_fp, show_plots=show_plots, debug=debug,
-                                      results_dir=upstream_dir).process(name=dl_name)
-    processor = Scintillators_Processing(scint_fps, df, show_plots=show_plots, debug=debug,
-                                         results_dir=upstream_dir)
-    analysis  = Detector_Analysis(processor, df, debug=debug, results_dir=results_dir)
-
-    if moyal_fit_ranges is not None:
-        analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=moyal_fit_ranges, **method_kwargs)
-    else:
-        analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=MPVs, **method_kwargs)
-
-    return df, processor, analysis
-
-
-    # def _finish_mpl(self, fig, name):
-    #     if self.save_plots:
-    #         path = os.path.join(self.results_dir, f"{name}.png")
-    #         fig.savefig(path, dpi=150, bbox_inches='tight')
-    #         print(f"[saved] {path}")
-    #         plt.close(fig)
-    #     else:
-    #         plt.show()
-
-    # def _finish_plotly(self, fig, name):
-    #     if self.save_plots:
-    #         path = os.path.join(self.results_dir, f"{name}.png")
-    #         fig.write_image(path, scale=2)
-    #         print(f"[saved] {path}")
-    #     else:
-    #         fig.show()
-
-    # def _save_table(self, df, name):
-    #     if self.save_plots:
-    #         path = os.path.join(self.results_dir, f"{name}.csv")
-    #         df.to_csv(path, index=False)
-    #         print(f"[saved] {path}")
-
     def _save_summary(self, d, name):
         if self.save_plots:
             path = os.path.join(self.results_dir, f"{name}.csv")
@@ -1669,6 +1608,58 @@ def process_run(datalogger_fp, scint_fps, moyal_fit_ranges=None, MPVs=None,
             rows["noise_threshold"]    = d["noise_threshold"]
             rows.to_csv(path, index=False)
             print(f"[saved] {path}") 
+
+
+def process_run(datalogger_fp, scint_fps, moyal_fit_ranges=None, MPVs=None,
+                results_dir=None, save_all=False, show_plots=False,
+                debug=False, dl_name="datalogger_abs", **method_kwargs):
+    '''
+    Run the full Datalogger_Processing -> Scintillators_Processing -> Detector_Analysis
+    chain in one call, routing directly to either the calibration or fixed-MPV method.
+
+    Exactly one of moyal_fit_ranges / MPVs must be given:
+        moyal_fit_ranges -> CALIBRATION RUN
+        MPVs             -> ANALYSIS RUN
+
+    Args:
+        datalogger_fp    : path to the datalogger CSV
+        scint_fps        : list of scintillator TXT paths, ordered scint1..scintN
+        moyal_fit_ranges : list of (min, max) mV fit windows per scint
+        MPVs             : list of per-scint MPVs in mV from a prior calibration
+        results_dir      : where Detector_Analysis writes its figures/summary
+        save_all         : if True, results_dir is also given to Datalogger_Processing
+                           and Scintillators_Processing, so their plots are saved too;
+                           if False (default) only the analysis figures are written
+        show_plots       : forwarded to both upstream classes. Default False, which
+                           with save_all=False means their plots are suppressed entirely
+        dl_name          : filename stem for the Absolute Timer datalogger figure
+        **method_kwargs  : forwarded to whichever terminal method is dispatched.
+                           noise_threshold and twodim_hist_args work on both paths.
+                           mip_window does too, but defaults differ by path: on an
+                           analysis run it defaults to (0.8, 1.2); on a calibration
+                           run, omitting it derives the zoom from the fit ranges, and
+                           passing it overrides that fit-derived window. E.g.
+                               twodim_hist_args={'col': 'MIP_ampcal', 'cbar_max': 200, 'range_x':[0,6], 'range_y':[0,4]}
+                               noise_threshold=0.2
+                               mip_window=(0.6, 1.4)
+                           twodim_hist_args only reads 'col', 'cbar_max', 'range_x', 'range_y' — other
+                           keys are silently ignored.
+
+    Returns:
+        (datalogger_df, processor, analysis) — analysis still carries master_df,
+        mpv_per_scint, global_mean_mpv, etc. for chaining into a later run.
+    '''
+    upstream_dir = results_dir if save_all else None
+
+    df        = Datalogger_Processing(datalogger_fp, show_plots=show_plots, debug=debug,
+                                      results_dir=upstream_dir).process(name=dl_name)
+    processor = Scintillators_Processing(scint_fps, df, show_plots=show_plots, debug=debug,
+                                         results_dir=upstream_dir)
+    analysis  = Detector_Analysis(processor, df, debug=debug, results_dir=results_dir, show_plots=show_plots)
+
+    analysis.run(MPVs=MPVs, moyal_fit_ranges=moyal_fit_ranges, **method_kwargs)
+
+    return df, processor, analysis
 
 # # ================== Helper functions for plotting in other scripts ==================
 # def plot_density_heatmap_ampcal(analysis, col='MIP_ampcal', normalize_by_livetime=True, cbar_max=None):

@@ -103,11 +103,6 @@ per-scintillator SiPM figures.
 - **`May31st_flight_analysis.py`** — ground-calibration MPVs applied to the
   balloon run, split into sections with the `flightanalysis_methods.py` helpers.
 
-## `CW_calibration_grounddata.ipynb`
-NOTE: NOTEBOOK OUT OF DATE
-All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.pyThere are two equivalent ways to run a dataset: instantiate the three classes
-yourself, or hand everything to `process_run` in one call. They do the same work
-— `process_run` is just the three steps wrapped up.
 
 **Option A — the three classes, step by step.** Use this when you want to keep a
 handle on the intermediate objects, or when a run needs something non-standard
@@ -165,7 +160,8 @@ The core processing and calibration module for the CosmicWatch (CW) detectors.
 It ingests the raw datalogger CSV and the per-scintillator TXT files, aligns
 them on a common timeline, calibrates the SiPM amplitude response, and produces
 the rate spectra and density heatmaps used in the analysis. The pipeline is
-built around three classes plus a set of top-level helpers.
+built around three classes plus a top-level helper, process_run(), which runs
+the methods in order.
 
 **Classes**
 
@@ -277,7 +273,6 @@ as a sanity check (and prints max altitude before/after trimming to confirm the
 trim didn't clip the peak), then splits the flight into 4 time segments and runs
 the fixed-MPV analysis using the MPVs from `three_scint_calibration_grounddata.py`.
 
-
 ## flightanalysis_methods.py
 Defines a few flight-specific helpers on top of `calibration_methods`:
 
@@ -292,6 +287,11 @@ Defines a few flight-specific helpers on top of `calibration_methods`:
   objects.
 - **`analyze_flight_window(...)`** — convenience wrapper for a single
   `[t_start, t_end]` window.
+
+## `CW_calibration_grounddata.ipynb`
+NOTE: NOTEBOOK OUT OF DATE
+All the analysis had originally mean done in one Jupyter notebook, but as it ended up being too large, I split the analsysis into separate scripts: calibration_methods.py has classes and helpers, that are imported into CW_calibration_grounddata.py to do calibration with the ground data, and then results are used in/applied to flight data in flight-data-analysis.pyThere are two equivalent ways to run a dataset: instantiate the three classes
+yourself, or hand everything to `process_run` in one call. They do the same work
 
 ---
 
