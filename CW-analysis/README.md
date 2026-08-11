@@ -104,50 +104,6 @@ per-scintillator SiPM figures.
   balloon run, split into sections with the `flightanalysis_methods.py` helpers.
 
 
-**Option A — the three classes, step by step.** Use this when you want to keep a
-handle on the intermediate objects, or when a run needs something non-standard
-(a custom `name=` on the datalogger figure, different `results_dir` per class,
-inspecting `proc.aligned_scint1` before analyzing).
-
-```python
-from calibration_methods import (
-    Datalogger_Processing, Scintillators_Processing, Detector_Analysis
-)
-
-# 1) datalogger → continuous Absolute Timer (handles timer resets)
-df = Datalogger_Processing(datalogger_fp, show_plots=False).process()
-
-# 2) align each scintillator to the datalogger (deadtime-corrected livetime)
-proc = Scintillators_Processing([scint1_fp, scint2_fp, scint3_fp], df)
-
-# 3) calibrate + plot — pick ONE mode:
-analysis = Detector_Analysis(proc, df, results_dir="Results/roomtemp")
-analysis.calibrate_and_analyze_grounddata(moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)])  # fit each MPV
-# analysis.analyze_calibrated_data_with_fixed_MPVs(MPVs=[56.78, 57.00, 54.64])              # or supply MPVs
-```
-
-**Option B — one call.** Same pipeline, same outputs. Which terminal method runs
-is decided by which argument you pass:
-
-```python
-from calibration_methods import process_run
-
-# CALIBRATION RUN — fit a Moyal per scintillator to extract the MPVs
-df, proc, analysis = process_run(
-    datalogger_fp, [scint1_fp, scint2_fp, scint3_fp],
-    moyal_fit_ranges=[(46, 80), (46, 82), (44, 76)],
-    results_dir="Results/roomtemp",
-)
-
-# ANALYSIS RUN — apply MPVs from a previous calibration, no fitting
-df, proc, analysis = process_run(
-    datalogger_fp, [scint1_fp, scint2_fp, scint3_fp],
-    MPVs=[56.78, 57.00, 54.64],
-    results_dir="Results/Cs137/Source",
-    twodim_hist_args={'col': 'MIP', 'cbar_max': 0.0005},
-)
-```
-
 Either way, results live on the returned `analysis`: `analysis.master_df`
 (calibrated event dataframe) and `analysis.mpv_per_scint` (MPVs used). Plots and
 `calibration_summary.csv` are written to `results_dir`; with no `results_dir`
@@ -201,25 +157,12 @@ the methods in order.
   datalogger and per-scintillator SiPM figures. Extra keywords (`noise_threshold`,
   `twodim_hist_args`, and `mip_window` on the fixed-MPV path only) are forwarded to
   whichever method is dispatched. Returns `(datalogger_df, processor, analysis)`.
-- **`split_flight_and_background(...)`** — splits a run into flight vs.
-  background using altitude, cutting where the payload returns to ground after
-  apogee.
-- **`split_by_time_marks(...)`** — splits a datalogger + scintillator set into
-  sections between a list of Absolute Timer marks (e.g. ascent / float /
-  descent).
-- **`plot_density_heatmap_ampcal(...)`** — 2D density heatmap of the
-  amplitude-calibrated cross-scintillator MIP (mean vs. spread across
-  scintillators).
-- **Saving helpers** (`set_results_dir`, `finish_mpl`, `finish_plotly`,
-  `save_table`, `save_summary`) — by default every plot is shown inline; calling
-  `set_results_dir("may31flight")` switches the module into save mode, writing
-  PNGs and CSVs (including the per-scintillator fit-constant summary) into a
-  `<name>_results/` folder.
-
-**Key techniques:** deadtime-corrected livetime, nearest-timestamp
-datalogger/scintillator alignment, Moyal fits for MPV extraction, MIP
-normalization, amplitude calibration to a global-mean MPV, and
-livetime-normalized rate heatmaps.
+- **`PlotOutput`** — mixin inherited by all three classes above, holding the
+  save/show policy in one place. `_init_output()` reads `results_dir` and
+  `show_plots` into the `save_plots` / `show_plots` flags (see the table in
+  [Outputs](#outputs)); `_finish_mpl()` / `_finish_plotly()` end every figure
+  by saving, showing, and closing according to those flags; `_save_table()`
+  and `_save_summary()` write the CSVs.
 
 **Usage:**
 
@@ -232,9 +175,9 @@ produces all the calibration plots.
 
 ## `three_scint_calibration_grounddata.py`
 
-Bench/ground calibration driver. Runs the lab datasets through the pipeline to
-establish the reference MPVs and the temperature dependence of the detector
-gain. In order, it:
+Bench/ground calibration example. Runs the lab datasets through the pipeline to
+establish the reference MPVs and the temperature dependence of the detector gain
+on background calibration runs. Includes:
 
 - **Room-temperature run** — a 14-hour run fit with Moyal (`calibrate_and_analyze_grounddata`)
   to extract the baseline per-scintillator MPVs.

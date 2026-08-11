@@ -17,18 +17,21 @@ class PlotOutput:
     and Detector_Analysis. Subclasses call _init_output() in their __init__, then
     end every figure with _finish_mpl() / _finish_plotly() instead of plt.show().
 
-    Two flags drive everything, set once in _init_output:
-        save_plots : True whenever results_dir is given (the directory is created then)
-        show_plots : None -> show only when not saving; True/False -> forced
+    Give a filepath for results_dir and figures are saved there (the directory is created).
+    Set show_plots=True and they're displayed. The different possible combinations of saving
+    methods are listed below:
 
-    Resulting behaviour:
-        results_dir given, show_plots=None/False  -> save only
-        results_dir given, show_plots=True        -> save and show
-        results_dir None,  show_plots=None/True   -> show only
-        results_dir None,  show_plots=False       -> no output at all; the
-            `if not (self.show_plots or self.save_plots): return` guards in
-            subplots(), plot_SiPM_histograms(), and plot_all_SiPM_distributions()
-            skip those figures entirely
+        results_dir   show_plots   result
+        -----------------------------------------
+        None          not set      show only
+        None          True         show only
+        None          False        no output at all
+        path          not set      save only
+        path          False        save only
+        path          True         save and show
+
+    Plotting methods that would otherwise build a figure for nothing start with
+    `if not (self.show_plots or self.save_plots): return` to cover the no-output row.
 
     Methods:
         _init_output(results_dir, show_plots) : set the flags, mkdir if saving
@@ -40,22 +43,23 @@ class PlotOutput:
     figure while leaving show behaviour intact — used by Datalogger_Processing.subplots()
     so the raw Timer[S] plot is never written, only the Absolute Timer version.
     """
-
     def _init_output(self, results_dir=None, show_plots=None):
-        
-        # Called from each subclass's __init__. Sets the two flags every
-        # plotting method downstream reads: self.save_plots and self.show_plots.
         self.results_dir = results_dir
-        self.save_plots  = results_dir is not None          # saving is implied by giving a directory
-        
-        # show_plots=None means "infer": show only if we're NOT saving.
-        # Passing True/False overrides that inference explicitly.
-        if show_plots is None:
-            show_plots = not self.save_plots      # default: show only when we're not saving
-        self.show_plots = bool(show_plots)
-        if self.save_plots:
-            os.makedirs(self.results_dir, exist_ok=True)    # create the folder up front, no-op if it exists
-            print(f"[plots] saving to {self.results_dir}/")
+
+        if results_dir is None:
+            self.save_plots = False
+            if show_plots is None:
+                self.show_plots = True       # nothing specified -> show interactively
+            else:
+                self.show_plots = bool(show_plots)   # False -> no output at all
+        else:
+            self.save_plots = True
+            os.makedirs(results_dir, exist_ok=True)
+            print(f"[plots] saving to {results_dir}/")
+            if show_plots is None:
+                self.show_plots = False      # saving, so don't also pop up windows
+            else:
+                self.show_plots = bool(show_plots)   # True -> save and show
 
     def _finish_mpl(self, fig, name=None):
         # Terminal call for every matplotlib figure: save, show, close — in that order.
