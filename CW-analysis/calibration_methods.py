@@ -62,6 +62,13 @@ class PlotOutput:
                 self.show_plots = bool(show_plots)   # True -> save and show
 
     def _finish_mpl(self, fig, name=None):
+        # Interactive fit-range tuning sets _capture_figs to a list: hand the figure
+        # back instead of saving/showing/closing it, so draft iterations write nothing
+        # and no matplotlib window opens to fight the tk mainloop.
+        cap = getattr(self, '_capture_figs', None)
+        if cap is not None:
+            cap.append((fig, name))
+            return
         # Terminal call for every matplotlib figure: save, show, close — in that order.
         if self.save_plots and name is not None:            # name=None => figure is deliberately not saved
             path = os.path.join(self.results_dir, f"{name}.png")
@@ -546,8 +553,11 @@ class Detector_Analysis(PlotOutput):
         if mip_window is None and MPVs is not None:
             mip_window = (0.8, 1.2)
 
-        # if user opts to pass moyal_fit_ranges, then the class attribute is set to those ranges
+        # CALIBRATION path: tune the fit windows interactively, then store the accepted
+        # ranges as the class attribute. The MPVs path skips both and leaves
+        # self.moyal_fit_ranges untouched, exactly as before.
         if moyal_fit_ranges is not None:
+            moyal_fit_ranges = self._tune_fit_ranges_interactively(moyal_fit_ranges, noise_threshold)
             self.moyal_fit_ranges = moyal_fit_ranges
 
         # if user opts to pass moyal_fit_ranges, then the plot_rate_spectra_preview method is called to plot the rate spectra with the Moyal fits overlaid
@@ -820,7 +830,7 @@ class Detector_Analysis(PlotOutput):
 
         x = len(self.processor.fps)
 
-        fig, axes_all = plt.subplots(2, x, figsize=(6 * x, 10), squeeze=False)
+        fig, axes_all = plt.subplots(2, x, figsize=(4 * x, 6), squeeze=False)
         axes_top = axes_all[0]
         stored = []
         colors = ['teal', 'darkorange', 'steelblue']
@@ -1596,6 +1606,67 @@ class Detector_Analysis(PlotOutput):
         plt.suptitle(r'Rate Spectra with Poisson Uncertainty Bands ($\sigma_i = \sqrt{N_i}\,/\,T_{\mathrm{live}}$)', fontsize=14)
         plt.tight_layout()
         self._finish_mpl(fig, "rate_spectra")
+
+    def _tune_fit_ranges_interactively(self, moyal_fit_ranges, noise_threshold):
+        """
+        Guess-and-check loop for the Moyal fit windows, using matplotlib widgets.
+
+        Each iteration redraws both fit figures with the current ranges and opens a
+        small control window holding one "min, max" text box per scintillator,
+        prefilled with the current window and labelled with the MPV it just produced.
+        Refit loops with the edited numbers; Accept returns them so run() can
+        continue. Draft figures are captured via self._capture_figs, so nothing is
+        saved; plt.show() blocks until a button closes every window.
+
+        Called by run() whenever moyal_fit_ranges is given. Built on matplotlib
+        widgets rather than tkinter because Tk and the macOS backend can't both
+        initialise NSApplication in one process.
+        """
+        from matplotlib.widgets import TextBox, Button
+
+        ranges = [(float(lo), float(hi)) for lo, hi in moyal_fit_ranges]
+
+        while True:
+            self._capture_figs = []
+            self.fit_and_normalize_spectra(moyal_fit_ranges=ranges, noise_threshold=noise_threshold)
+            figs, self._capture_figs = self._capture_figs, None
+
+            n = len(ranges)
+            ctrl = plt.figure(figsize=(6, 0.55 * (n + 1) + 0.3))
+            ctrl.canvas.manager.set_window_title("Moyal fit ranges")
+            h = 1.0 / (n + 1)
+
+            boxes = []                                   # keep refs alive or the callbacks are GC'd
+            for i, (lo, hi) in enumerate(ranges):
+                popt = self.scintillator_moyal_fit_results[i]['popt']
+                label = f"scint {i+1}  (MPV {popt[0]:.2f})  " if popt is not None else f"scint {i+1}  (failed)  "
+                ax = ctrl.add_axes([0.40, 1 - (i + 1) * h + 0.2 * h, 0.52, 0.6 * h])
+                boxes.append(TextBox(ax, label, initial=f"{lo:g}, {hi:g}"))
+
+            state = {'refit': False}
+
+            def on_refit(_):
+                try:
+                    new = [tuple(sorted(float(v) for v in b.text.split(','))) for b in boxes]
+                except ValueError:
+                    print("[interactive fit] each box needs 'min, max' — not changed")
+                    return
+                ranges[:] = new
+                state['refit'] = True
+                plt.close('all')                          # ends plt.show() below
+
+            b_refit  = Button(ctrl.add_axes([0.40, 0.2 * h, 0.25, 0.6 * h]), "Refit")
+            b_accept = Button(ctrl.add_axes([0.67, 0.2 * h, 0.25, 0.6 * h]), "Accept")
+            b_refit.on_clicked(on_refit)
+            b_accept.on_clicked(lambda _: plt.close('all'))
+
+            plt.show()                                    # blocks until every window is closed
+            for fig, _ in figs:
+                plt.close(fig)                            # no-op if a button already closed them
+
+            if not state['refit']:                        # Accept, or all windows closed by hand
+                print(f"[interactive fit] accepted moyal_fit_ranges = {ranges}")
+                return ranges
 
     def _save_summary(self, d, name):
         if self.save_plots:
