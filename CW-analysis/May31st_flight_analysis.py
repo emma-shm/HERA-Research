@@ -25,14 +25,14 @@ top_scint_fp = f'{DATA_DIR}/May_31st_Flight/left_AxLab_M_038.txt' # @param {type
 mid_scint_fp = f'{DATA_DIR}/May_31st_Flight/middle_AxLab_M_037 copy.txt' # @param {type:"string"}
 bot_scint_fp = f'{DATA_DIR}/May_31st_Flight/right_AxLab_M_038 copy.txt' # @param {type:"string"}
 
-# Original / full flight data
-og_flight_df      = Datalogger_Processing(datalogger_csv_fp, show_plots=False, results_dir=RESULTS_DIR).process(name="original_flight_datalogger")
+og_flight_df      = Datalogger_Processing(datalogger_csv_fp, show_plots=False, results_dir=RESULTS_DIR).process(name="original_flight_datalogger") # Original / full flight data
 
-# Trimming datalogger and scintillator files based on timestamp of altitude where the balloon returns to ground
-dl_fp, scint_fps_trimmed = trim_to_flight(datalogger_csv_fp, [top_scint_fp, mid_scint_fp, bot_scint_fp])
 
-# Re-run datalogger to make new, trimmed version of flight
-trimmed_flight_df = Datalogger_Processing(dl_fp, show_plots=False, results_dir=RESULTS_DIR).process(name="trimmed_flight_datalogger")
+dl_fp, scint_fps_trimmed = trim_to_flight(datalogger_csv_fp, [top_scint_fp, mid_scint_fp, bot_scint_fp]) # Trimming datalogger and scintillator files based on timestamp of altitude where the balloon returns to ground
+
+
+trimmed_flight_df = Datalogger_Processing(dl_fp, show_plots=False, results_dir=RESULTS_DIR).process(name="trimmed_flight_datalogger") # Re-run datalogger to make new, trimmed version of flight -- just to see
+
 
 # plot Altitude vs time to check my work
 fig_alt = plt.figure(figsize=(10, 6))
@@ -55,7 +55,7 @@ segments = analyze_flight_in_segments(
     scint_fps_trimmed,
     MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
     flight_df=trimmed_flight_df,
-    n_segments=32,
+    n_segments=32, # THIS LINE is where you can change the number of bins / segments you split the flight into
     split_by="time",
     run_name="may31flight_fine",
 )
@@ -115,7 +115,6 @@ plt.grid(True)
 plt.savefig(os.path.join(RESULTS_DIR, "counts_by_segment.png"))
 plt.show()
 
-jhbfdskjdncjk
 
 # ========================= Isolate ground before flight in full files =========================
 
@@ -127,29 +126,45 @@ sections_flight = split_by_time_marks(datalogger_csv_fp, [top_scint_fp, mid_scin
                                       labels=['pre-flight', 'flight', 'post-flight'],
                                       )
 
-section_fit_ranges = {
-    'pre-flight': [(46, 80), (46, 82), (44, 76)],
-    'flight': [(46, 80), (46, 82), (44, 76)],
-    'post-flight': [(46, 80), (46, 82), (44, 76)],
-}
 
-flight_runs = {}
+# isolating the pre-flight section
+pre_flight = next(sec for sec in sections_flight if sec['label'] == 'pre-flight')
 
-for sec in sections_flight:
-    print(f"\n=== {sec['label']} ===")
-    df, processor, analysis = process_run(
-        sec['datalogger'], sec['scints'],
-        MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
-        results_dir=os.path.join(RESULTS_DIR, sec['label']),
-        twodim_hist_args={'cbar_max': 1},
-    )
+print(f"\n=== {pre_flight['label']} ===")
+df, processor, analysis = process_run(
+    pre_flight['datalogger'], pre_flight['scints'],
+    MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
+    results_dir=os.path.join(RESULTS_DIR, pre_flight['label']),
+    twodim_hist_args={'cbar_max': 1},
+)
 
-    fig_alt = plt.figure(figsize=(10, 6))
-    plt.plot(df['Absolute Timer (S)'], df['Altitude[m]']*3.281, label='Flight', color='blue')
-    plt.xlabel('Timer')
-    plt.ylabel('Altitude [ft]')
-    plt.title(f'Altitude vs Time for Section {sec["label"]}')
-    plt.savefig(os.path.join(RESULTS_DIR, f"altitude_check_{sec['label']}.png"))
-    plt.close(fig_alt)
+fig_alt = plt.figure(figsize=(10, 6))
+plt.plot(df['Absolute Timer (S)'], df['Altitude[m]']*3.281, label='Ground', color='blue')
+plt.xlabel('Timer')
+plt.ylabel('Altitude [ft]')
+plt.title(f'Altitude vs Time for Section {pre_flight["label"]}')
+plt.savefig(os.path.join(RESULTS_DIR, f"altitude_check_{pre_flight['label']}.png"))
+plt.close(fig_alt)
 
-    flight_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
+
+# # looping through each of the sections created by split_by_time_marks
+# flight_runs = {}
+
+# for sec in sections_flight:
+#     print(f"\n=== {sec['label']} ===")
+#     df, processor, analysis = process_run(
+#         sec['datalogger'], sec['scints'],
+#         MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
+#         results_dir=os.path.join(RESULTS_DIR, sec['label']),
+#         twodim_hist_args={'cbar_max': 1},
+#     )
+
+#     fig_alt = plt.figure(figsize=(10, 6))
+#     plt.plot(df['Absolute Timer (S)'], df['Altitude[m]']*3.281, label='Flight', color='blue')
+#     plt.xlabel('Timer')
+#     plt.ylabel('Altitude [ft]')
+#     plt.title(f'Altitude vs Time for Section {sec["label"]}')
+#     plt.savefig(os.path.join(RESULTS_DIR, f"altitude_check_{sec['label']}.png"))
+#     plt.close(fig_alt)
+
+#     flight_runs[sec['label']] = {'df': df, 'processor': processor, 'analysis': analysis}
