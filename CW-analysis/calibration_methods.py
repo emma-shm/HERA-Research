@@ -221,6 +221,9 @@ class Datalogger_Processing(PlotOutput):
       absolute_timers = []
 
       for i, seg in enumerate(self.timerreset_segments):
+        t = seg['Timer[S]'].values
+        print(f" \n boop: seg {i}: {len(t)} rows, 0 -> {t[-1]:.1f} s "
+                f"({t[-1]/4294.967:.2f} rollovers)")
         current_timers = seg['Timer[S]'].values
 
         if len(current_timers) == 0:
@@ -334,17 +337,49 @@ class Scintillators_Processing(PlotOutput):
 
         # Create a copy of the datalogger dataframe sorted by Absolute Timer (S) for merging
         dl_df = datalogger_df.sort_values('Absolute Timer (S)').reset_index(drop=True)
-
+        
+        print('output check')
+        for i in range(1, len(self.fps) + 1):
+            t = getattr(self, f'scint_{i}')['Time[s]']
+            print(f"  scint{i} Time[s]: {t.min():.1f} -> {t.max():.1f}, "
+                  f"{(t.diff() < -10).sum()} backward jumps")
+        print(f"  dl Absolute Timer: {dl_df['Absolute Timer (S)'].min():.1f} -> "
+              f"{dl_df['Absolute Timer (S)'].max():.1f}")
+        print('end')
+        
         for k in self.coinc_orders:
             tag = self._coinc_tag(k)
-            if k == self.coinc_orders[-1]:
-                # top fold: sum every hardware column of order >= k. A CW1&2&3 hit is
-                # still a top-and-mid coincidence; bottom firing doesn't un-fire them.
-                srcs = [c for c in dl_df.columns
-                        if c.startswith('Events CW') and c.count('&') + 1 >= k]
-            else:
-                srcs = [self._coinc_src_col(k)]
+            # The hardware counter of order k is already inclusive — a CW1&2&3 hit
+            # also increments CW1&2 (verified: 99.8% of triples have an adjacent
+            # CW1&2 increment). Summing higher orders on top double-counts them.
+            srcs = [self._coinc_src_col(k)]
             dl_df[f'delta_{tag}'] = sum(dl_df[c].diff().clip(lower=0).fillna(0) for c in srcs)
+
+        print("\n" + "=" * 62)
+                # --- double-count check ---
+        for c in [c for c in dl_df.columns if c.startswith('Events CW')]:
+            print(f"  {c}: cumulative span {dl_df[c].iloc[-1] - dl_df[c].iloc[0]:.0f}, "
+                  f"delta-sum {dl_df[c].diff().clip(lower=0).fillna(0).sum():.0f}")
+        for k in self.coinc_orders:
+            tag = self._coinc_tag(k)
+            used = ([c for c in dl_df.columns
+                     if c.startswith('Events CW') and c.count('&') + 1 >= k]
+                    if k == self.coinc_orders[-1] else [self._coinc_src_col(k)])
+            print(f"  delta_{tag} built from {used} -> sum {dl_df[f'delta_{tag}'].sum():.0f}, "
+                  f"rows tagged {(dl_df[f'delta_{tag}'] > 0).sum()}")
+            
+        d12  = dl_df['Events CW1&2'].diff().clip(lower=0).fillna(0).to_numpy()
+        d123 = dl_df['Events CW1&2&3'].diff().clip(lower=0).fillna(0).to_numpy()
+        tt   = dl_df['Absolute Timer (S)'].to_numpy()
+        idx  = np.where(d123 > 0)[0]
+        partner = sum(any(0 <= k < len(tt) and d12[k] > 0 and abs(tt[k]-tt[j]) < 0.030
+                          for k in (j-1, j+1)) for j in idx)
+        print(f"  triples {len(idx)}, with adjacent CW1&2 increment within 30 ms: "
+              f"{partner} ({partner/len(idx)*100:.1f}%)")
+        
+        print(f"  dl: {len(dl_df)} rows over {tt[-1]-tt[0]:.1f} s, "
+        f"{((d12 + d123) > 0).sum()} with a coincidence increment")
+        print("=" * 62 + "\n")
 
         totals = {}
         for k in self.coinc_orders:
@@ -819,13 +854,7 @@ class Detector_Analysis(PlotOutput):
         dl_df = self.datalogger_df.sort_values('Absolute Timer (S)').reset_index(drop=True)
         for k in self.processor.coinc_orders:
             tag = self.processor._coinc_tag(k)
-            if k == self.processor.coinc_orders[-1]:
-                # top fold: sum every hardware column of order >= k. A CW1&2&3 hit is
-                # still a top-and-mid coincidence; bottom firing doesn't un-fire them.
-                srcs = [c for c in dl_df.columns
-                        if c.startswith('Events CW') and c.count('&') + 1 >= k]
-            else:
-                srcs = [self.processor._coinc_src_col(k)]
+            srcs = [self.processor._coinc_src_col(k)]
             dl_df[f'delta_{tag}'] = sum(
                 dl_df[c].diff().clip(lower=0).fillna(0) for c in srcs)
         master = dl_df.copy()
@@ -1812,7 +1841,13 @@ class Detector_Analysis(PlotOutput):
             # .dropna() removes rows where the SiPM column is NaN.
             all_events = df[col].dropna()
             coinc_events = df.loc[coinc_mask, col].dropna()
-            no_coinc_events = df.loc[~any_coinc_mask, col].dropna()
+            no_coinc_events = df.loc[~coinc_mask, col].dropna()
+
+            print('\n' + '=' * 70)
+            print(f"  scint{scint_idx}: {len(all_events)} events, "
+                  f"{len(coinc_events)} tagged coincident "
+                  f"({len(coinc_events)/len(all_events)*100:.2f}%)")
+            print("\n")
 
             old = (~(df[self.coinc_col] > 0)).sum()
             new = (~any_coinc_mask).sum()

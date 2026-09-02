@@ -13,76 +13,6 @@ import inspect
 
 # ========================= Helper functions =========================
 
-def split_by_time_marks(datalogger_fp, scint_fps, time_marks, labels=None):
-    """
-    Split a datalogger + scintillator set into the sections BETWEEN a list of
-    Absolute Timer marks (seconds). N marks → N-1 sections: section k spans
-    [time_marks[k], time_marks[k+1]). To keep the run start/end as their own
-    sections, include 0 and the max Absolute Timer in time_marks.
-
-    Args:
-        datalogger_fp : path to the datalogger CSV
-        scint_fps     : list of scintillator TXT paths
-        time_marks    : list of Absolute Timer cut points in seconds
-        labels        : optional list of section names (len == len(marks)-1);
-                        defaults to seg1, seg2, ...
-
-    Returns:
-        list of dicts, one per section:
-            {'label', 't_start', 't_end', 'datalogger', 'scints': [...]}
-    """
-    marks = sorted(float(t) for t in time_marks)
-    if len(marks) < 2:
-        raise ValueError("Need at least 2 time marks to define a section.")
-    if labels is not None and len(labels) != len(marks) - 1:
-        raise ValueError(f"Got {len(labels)} labels for {len(marks) - 1} sections.")
-
-    # Build Absolute Timer with the existing class.
-    dl = Datalogger_Processing(datalogger_fp, show_plots=False)
-    dl.process()
-    df = dl.df.copy()
-    df['Timer[S]'] = df['Absolute Timer (S)']        
-    df = df.drop(columns=[c for c in ['Absolute Timer (S)', 'Timer_rel'] if c in df.columns]) # drop columns
-
-    out_dir = os.path.dirname(datalogger_fp)
-    base    = os.path.splitext(os.path.basename(datalogger_fp))[0]
-
-    # Pre-read each scintillator once (3-line header + body), reuse across sections.
-    cols = ['Event','Time[s]','Coincident[bool]','ADC[0-4095]','SiPM[mV]','Deadtime[s]','Temp[C]','Pressure[Pa]']
-    scint_data = []
-    for fp in scint_fps: # loop over scintillator files, read them in, and store the header and dataframe for later slicing
-        with open(fp) as f:
-            header = [next(f) for _ in range(3)] # next(f) reads the next line from the file object f; this reads the first 3 lines of the file and stores them in a list called header
-        sdf = pd.read_csv(fp, sep='\t', comment='#', header=None, skiprows=3, names=cols, engine='python')
-        sbase = os.path.splitext(os.path.basename(fp))[0]
-        scint_data.append((sbase, header, sdf))
-
-    sections = []
-    for k in range(len(marks) - 1): # loop over the time marks to define the sections
-        t0, t1 = marks[k], marks[k + 1] # take the k-th and (k+1)-th time marks to define the start and end of the section
-        tag = labels[k] if labels is not None else f"seg{k + 1}"
-        print(f"Section '{tag}': {t0:.0f}-{t1:.0f} s")
-
-        # Datalogger slice [t0, t1).
-        dl_out  = os.path.join(out_dir, f"{base}_{tag}.csv")
-        dl_mask = (df['Timer[S]'] >= t0) & (df['Timer[S]'] < t1)
-        df[dl_mask].to_csv(dl_out, index=False)
-
-        # Scintillator slices on the same window, keeping the 3-line header + tab format.
-        scint_out = []
-        for sbase, header, sdf in scint_data:
-            out    = os.path.join(out_dir, f"{sbase}_{tag}.txt")
-            s_mask = (sdf['Time[s]'] >= t0) & (sdf['Time[s]'] < t1)
-            with open(out, 'w') as f:
-                f.writelines(header)
-                sdf[s_mask].to_csv(f, sep='\t', header=False, index=False)
-            scint_out.append(out)
-
-        sections.append({'label': tag, 't_start': t0, 't_end': t1,
-                         'datalogger': dl_out, 'scints': scint_out})
-
-    return sections
-
 def trim_to_flight(datalogger_fp, scint_fps, ground_band=50.0, lead_minutes=55.0):
     # Build Absolute Timer with the existing class.
     dl = Datalogger_Processing(datalogger_fp, show_plots=False)
@@ -154,9 +84,20 @@ def analyze_flight_in_segments(
     Each segment is handed to process_run with MPVs and save_all=True, so no
     Moyal fit is performed and the supplied MPVs are used directly.
 
-    Returns:
-        {label: Detector_Analysis}. Each analysis still carries .master_df,
-        .processor, .datalogger_df and .mpv_per_scint.
+    Args:
+        datalogger_fp : path to the datalogger CSV
+        scint_fps     : list of scintillator TXT paths
+        MPVs          : list of 3 floats, one per scintillator
+        flight_df     : optional pre-processed datalogger dataframe
+        n_segments    : number of segments to split into (ignored if time_marks)
+        split_by      : "time" or "events" (ignored if time_marks)
+        time_marks    : optional list of Absolute Timer cut points in seconds
+        labels        : optional list of section names (len == len(marks)-1)
+        noise_threshold: threshold for noise filtering in process_run
+        mip_window     : tuple of (low, high) MIP range for process_run
+        twodim_hist_args: dict of kwargs for 2D histogram plotting in process_run
+        run_name      : base name for segment folders, default is "flight"; folder for each of the N segments will be created under this name, as [run_name]_seg1, ..., [run_name]_segN
+        results_dir   : optional path to save segment folders; if None, data isn't saved
     """
     # 1) cut points on the Absolute Timer
     if time_marks is None:
