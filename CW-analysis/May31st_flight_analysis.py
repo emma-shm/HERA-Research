@@ -10,6 +10,7 @@ import os
 import calibration_methods
 from calibration_methods import *
 from flightanalysis_methods import *
+from alignment_methods import *
 import inspect
 
 DATA_DIR = '/Users/emmamartignoni/Desktop/Desktop - Emma’s MacBook Pro (3)/HERA-Research/Data/'
@@ -24,6 +25,23 @@ datalogger_csv_fp = f'{DATA_DIR}/May_31st_Flight/AHD011 copy.csv' # @param {type
 top_scint_fp = f'{DATA_DIR}/May_31st_Flight/left_AxLab_M_038.txt' # @param {type:"string"}
 mid_scint_fp = f'{DATA_DIR}/May_31st_Flight/middle_AxLab_M_037 copy.txt' # @param {type:"string"}
 bot_scint_fp = f'{DATA_DIR}/May_31st_Flight/right_AxLab_M_038 copy.txt' # @param {type:"string"}
+
+# ---- Battery cut + unwrapped logger timer, in the format alignment_methods expects.
+# split_by_time_marks writes Timer[S] = Absolute Timer (rollovers corrected) and cuts all four files at 27500 s.
+filtered = split_by_time_marks(datalogger_csv_fp, [top_scint_fp, mid_scint_fp, bot_scint_fp],
+                               time_marks=[0, 27500], labels=['battery_filtered'])[0]
+
+# ---- Align once on the full flight files; figures go to RESULTS_DIR/alignment_results
+aligned = align_files(os.path.dirname(filtered['datalogger']),
+                      {"Top":    filtered['scints'][0],
+                       "Middle": filtered['scints'][1],
+                       "Bottom": filtered['scints'][2]},
+                      filtered['datalogger'],
+                      results_dir=os.path.join(RESULTS_DIR, 'alignment_results'))
+
+# ---- Everything below now reads the aligned files
+datalogger_csv_fp = aligned['datalogger']
+top_scint_fp, mid_scint_fp, bot_scint_fp = aligned['scints']
 
 og_flight_df      = Datalogger_Processing(datalogger_csv_fp, show_plots=False, results_dir=RESULTS_DIR).process(name="original_flight_datalogger") # Original / full flight data
 
@@ -53,11 +71,13 @@ print(f"The first few rows of the new datalogger dataframe:\n{trimmed_flight_df.
 segments = analyze_flight_in_segments(
     dl_fp,
     scint_fps_trimmed,
-    MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
+    # MPVs=[56.78344621184912, 57.002885606912805, 54.6370444867040],
+    MPVs=[21.229423631297788, 22.107396502852346, 21.014219627449336],
     flight_df=trimmed_flight_df,
-    n_segments=32, # THIS LINE is where you can change the number of bins / segments you split the flight into
+    n_segments=4, # THIS LINE is where you can change the number of bins / segments you split the flight into
     split_by="time",
-    run_name="may31flight_fine",
+    # run_name="fine", # folder for each of the N segments will be created under this name, as [run_name]_seg1, ..., [run_name]_segN
+    results_dir=RESULTS_DIR,
 )
 
 # # grab any segment's analysis object for further work (Tcal columns, etc.)
