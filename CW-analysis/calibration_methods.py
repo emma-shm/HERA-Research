@@ -6,6 +6,7 @@ from scipy.optimize import curve_fit
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 from scipy.stats import linregress
+from alignment_methods import align_files # annafy's methods for scintillator drift offset corrections
 import os
 
 
@@ -31,7 +32,7 @@ class PlotOutput:
         path          True         save and show
 
     Plotting methods that would otherwise build a figure for nothing start with
-    `if not (self.show_plots or self.save_plots): return` to cover the no-output row.
+    if not (self.show_plots or self.save_plots): return` to cover the no-output row.
 
     Methods:
         _init_output(results_dir, show_plots) : set the flags, mkdir if saving
@@ -401,16 +402,6 @@ class Scintillators_Processing(PlotOutput):
         for c in unused:
             print(f"  IGNORED at N={len(self.fps)}: {c} = {dl_df[c].iloc[-1]:.0f} cumulative events")
 
-        # # ── DIAG 0: is the datalogger event-driven or polled? ──────────────
-        # # Event-driven -> a row exists only because a coincidence happened, so
-        # # almost no rows carry delta == 0 and delta is 1 nearly everywhere.
-        # # Polled       -> most rows fall in quiet intervals (delta == 0) and busy
-        # # intervals accumulate 2, 3, 4 counts between consecutive rows.
-        # for k in self.coinc_orders:
-        #     d = dl_df[f'delta_{self._coinc_tag(k)}']
-        #     print(f"  {self._coinc_tag(k)}: {(d == 0).mean()*100:.1f}% of {len(dl_df)} rows have delta==0 | "
-        #           f"value counts {d.value_counts().head(4).to_dict()}")
-
         # ══════════ TIMING DIAGNOSTIC ══════════
         print("\n" + "=" * 62)
         print("TIMING DIAGNOSTIC")
@@ -523,48 +514,6 @@ class Scintillators_Processing(PlotOutput):
             print(f"  scint{i} backward time steps: {(np.diff(ts) < 0).sum()}")
             print(f"  datalogger cadence (median): {np.median(np.diff(td)):.3f} s")
 
-            # # ── DIAG 2: match offset with NO tolerance ─────────────────────
-            # probe = pd.merge_asof(scint_df[[f'Time_scint{i}[s]']],
-            #                       dl_df[['Absolute Timer (S)']],
-            #                       left_on=f'Time_scint{i}[s]',
-            #                       right_on='Absolute Timer (S)',
-            #                       direction='nearest')
-            # off = probe[f'Time_scint{i}[s]'] - probe['Absolute Timer (S)']
-            # print(f"  offset (scint - dl): median {off.median():+.3f}  "
-            #       f"5% {off.quantile(0.05):+.3f}  95% {off.quantile(0.95):+.3f}  max|.| {off.abs().max():.1f}")
-            # print(f"  fraction within 0.5 s: {(off.abs() <= 0.5).mean()*100:.1f}%")
-            
-            # # ── DIAG 3: how close is each coincidence row to a scint event? ────
-            # # Reversed merge: coincidence rows are now the LEFT table, so each one
-            # # claims exactly one scintillator event instead of being broadcast onto many.
-            # print("\n DIAG 3 \n")
-            # for k in self.coinc_orders:
-            #     tag = self._coinc_tag(k)
-            #     coinc_rows = dl_df.loc[dl_df[f'delta_{tag}'] > 0, ['Absolute Timer (S)']]
-            #     # restrict to the window the scintillator was actually alive for
-            #     coinc_rows = coinc_rows[coinc_rows['Absolute Timer (S)'].between(ts.min(), ts.max())]
-
-            #     # # NULL TEST: shift coincidence times off the real ones. Any structure
-            #     # # that survives this is chance proximity, not physics. Comment out to
-            #     # # restore the real measurement.
-            #     # coinc_rows = coinc_rows.assign(**{'Absolute Timer (S)': coinc_rows['Absolute Timer (S)'] + 10.0})
-                
-            #     # Segment 1 only: before any timer reset, so Absolute Timer == raw Timer[S]
-            #     # and no stitching error has accumulated yet.
-            #     coinc_rows = coinc_rows[coinc_rows['Absolute Timer (S)'] < 4294]
-
-            #     back = pd.merge_asof(coinc_rows.sort_values('Absolute Timer (S)'),
-            #                          scint_df[[f'Time_scint{i}[s]']],
-            #                          left_on='Absolute Timer (S)',
-            #                          right_on=f'Time_scint{i}[s]',
-            #                          direction='nearest')
-            #     d = (back['Absolute Timer (S)'] - back[f'Time_scint{i}[s]']).abs()
-            #     print(f"  {tag} rows in scint window: {len(coinc_rows)} | "
-            #           f"nearest scint event |dt|: median {d.median():.4f}  "
-            #           f"90% {d.quantile(0.90):.4f}  99% {d.quantile(0.99):.4f} s")
-            #     for w in (0.001, 0.01, 0.1, 0.5):
-            #         print(f"      within {w:5.3f} s: {(d <= w).mean()*100:5.1f}%")
-
             # ── Merge datalogger INTO scintillator ─────────────────────────
             # scintillator is LEFT table → every scintillator row preserved
             aligned = pd.merge_asof(scint_df, dl_df,
@@ -592,19 +541,6 @@ class Scintillators_Processing(PlotOutput):
                 tag = self._coinc_tag(k)
                 real, fake = (aligned[f'delta_{tag}'] > 0).sum(), (null[f'delta_{tag}'] > 0).sum()
                 print(f"    NULL(+10s) {tag}: real {real} vs shifted {fake}  (ratio {real/max(fake,1):.3f})")
-
-            # # ── Fan-out diagnostic ─────────────────────────────────────────
-            # mult = aligned['Absolute Timer (S)'].value_counts()
-            # print(f"scint{i}: {len(aligned)} events -> {aligned['Absolute Timer (S)'].nunique()} "
-            #       f"datalogger rows | fan-out max {mult.max()} median {mult.median():.0f} "
-            #       f"| unmatched {aligned['Absolute Timer (S)'].isna().sum()}")
-            # for k in self.coinc_orders:
-            #     tag = self._coinc_tag(k)
-            #     print(f"   {tag}: datalogger counted {dl_df[f'delta_{tag}'].sum():.0f}, "
-            #           f"mask tags {(aligned[f'delta_{tag}'] > 0).sum()} rows")
-            
-            # print(f"   NaN check: AbsTimer {aligned['Absolute Timer (S)'].isna().sum()} "
-            # f"vs delta_CW12 {aligned['delta_CW12'].isna().sum()}")
             
             # ── Diagnostics ────────────────────────────────────────────────
             if self.debug:
@@ -768,6 +704,17 @@ class Detector_Analysis(PlotOutput):
 
         self.debug = debug
 
+    @staticmethod
+    def _spread(df, cols):
+        # N=2: signed difference scint1 − scint2; N>=3: sample std across scints
+        if len(cols) == 2:
+            return df[cols[0]] - df[cols[1]]
+        return df[cols].std(axis=1, ddof=1, skipna=False)
+    
+    def _spread_label(self, unit):
+        n = len(self.processor.fps)
+        return f"Scint1 − Scint2 [{unit}]" if n == 2 else f"Std across {n} scints [{unit}]"
+
     def run(self, MPVs=None, moyal_fit_ranges=None, noise_threshold=0.1, mip_window=None, twodim_hist_args=None):
         """
         Single entry point for the full analysis/plotting chain.
@@ -901,13 +848,13 @@ class Detector_Analysis(PlotOutput):
 
         # ── Cross-scintillator derived columns in mV (triple coincidence) ─
         top = self.processor.top_tag # top_tag is either CW123 or CW1234, or however many CWs you have, and indicates triple coincidence
-        sipm_top_mv_cols = [f'SiPM_mV_{top}_scint{i}'  for i in range(1, len(self.processor.fps) + 1)]
+        sipm_top_mv_cols = [f'SiPM_mV_{top}_scint{i}'  for i in range(1, len(self.processor.fps) + 1)] # will end up looking like ['SiPM_mV_CW123_scint1', 'SiPM_mV_CW123_scint2', 'SiPM_mV_CW123_scint3'] for a 3-scintillator setup, so length indicates number of scintillators
         master['SiPM_scints_avg']  = master[sipm_top_mv_cols].mean(axis=1, skipna=False)
-        master['SiPM_scints_std']  = master[sipm_top_mv_cols].std(axis=1, ddof=1, skipna=False)
+        master['SiPM_scints_std']  = self._spread(master, sipm_top_mv_cols) # the self._spread method computes the signed difference for 2 scintillators, or the sample std for 3 or more scintillators, so this takes care of the case where there are only two scintillators, ALTHOUGH then the column will be called STD and the value will be the signed difference, which is a bit confusing but it works for the purpose of the analysis
 
         sipm_top_mip_cols = [f'SiPM_MIP_{top}_scint{i}' for i in range(1, len(self.processor.fps) + 1)]
         master['SiPM_scints_avg_MIP'] = master[sipm_top_mip_cols].mean(axis=1, skipna=False)
-        master['SiPM_scints_std_MIP'] = master[sipm_top_mip_cols].std(axis=1, ddof=1, skipna=False) # standard deviation across the SiPM_MIP_{top_tag}_scint1, SiPM_MIP_{top_tag}_scint2, and SiPM_MIP_{top_tag}_scint3 --- std of the MIP amplitude on each scintillator from the mean
+        master['SiPM_scints_std_MIP'] = self._spread(master, sipm_top_mip_cols) # standard deviation across the SiPM_MIP_{top_tag}_scint1, SiPM_MIP_{top_tag}_scint2, and SiPM_MIP_{top_tag}_scint3 --- std of the MIP amplitude on each scintillator from the mean
 
         for i in range(1, len(self.processor.fps)):
             master[f'SiPM_diff_scint{i}_minus_scint{i+1}'] = (
@@ -925,7 +872,7 @@ class Detector_Analysis(PlotOutput):
         # ── Cross-scintillator calibrated MIP spread (the column the heatmap payoff lives in) ─
         sipm_top_mip_cal_cols = [f'SiPM_MIP_{top}_scint{i}_ampcal' for i in range(1, len(self.processor.fps) + 1)]
         master['SiPM_scints_avg_MIP_ampcal'] = master[sipm_top_mip_cal_cols].mean(axis=1, skipna=False)
-        master['SiPM_scints_std_MIP_ampcal'] = master[sipm_top_mip_cal_cols].std(axis=1, ddof=1, skipna=False)
+        master['SiPM_scints_std_MIP_ampcal'] = self._spread(master, sipm_top_mip_cal_cols)
 
 
         self.master_df = master
@@ -1489,7 +1436,7 @@ class Detector_Analysis(PlotOutput):
             color_continuous_scale="Inferno",
             labels={
                 avg_col: f"Mean across {n} scints [MIP]",
-                std_col: f"Std across {n} scints [MIP]",
+                std_col: self._spread_label('MIP'),
             },
             title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean ({cal_label})<br>"
                    f"(N={len(sub_avg)} events)"),
@@ -1523,7 +1470,7 @@ class Detector_Analysis(PlotOutput):
             color_continuous_scale="Inferno",
             labels={
                 "SiPM_scints_avg": f"Mean across {n} scints [mV]",
-                "SiPM_scints_std": f"Std across {n} scints [mV]",},
+                self._spread_label('mV'): f"Std across {n} scints [mV]",},
             title=(f"CW{coinc_label} coincidence: cross-scint spread vs. mean (raw mV)<br>"
                    f"(N={len(sub_mv)} events)"),
         )
@@ -1613,7 +1560,7 @@ class Detector_Analysis(PlotOutput):
 
         # ── Plotting ─────────────────────────────────────────────────────
         x_range = [bump_lo, bump_hi]
-        y_range = [0, 2]
+        [-2, 2] if n == 2 else [0, 2]
 
         fig = make_subplots(
             rows=1, cols=2,
@@ -1668,8 +1615,7 @@ class Detector_Analysis(PlotOutput):
 
     def pairwise_diffs_mV(self):
         top = self.processor.top_tag
-        md = self.master_df[self.master_df['SiPM_scints_avg'].between(110, 170)
-                            & self.master_df['SiPM_scints_std'].between(120, 170)]
+        md = self.master_df[self.master_df['SiPM_scints_avg'].between(110, 170) & self.master_df['SiPM_scints_std'].between(120, 170)]
         if md.empty:
             print("[pairwise_diffs_mV] no events in window — skipping")
             return
@@ -2231,7 +2177,7 @@ def subtraction_map(source, background, max_MIP=8, cbar_max=None, results_dir=No
     # Shared bin grid — identical edges are what make the two histograms subtractable.
     # Matches two_dimensional_histograms: 50×50 bins over [0,8]×[0,8].
     xedges = np.linspace(0, max_MIP, 51)
-    yedges = np.linspace(0, max_MIP, 51)
+    yedges = np.linspace(-max_MIP, max_MIP, 51) if len(source.processor.fps) == 2 else np.linspace(0, max_MIP, 51)
 
     # Same noise-floor cut the density heatmaps apply (mean MIP over threshold).
     src = source.master_df
